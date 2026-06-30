@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Code Review MVP</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --text: #172033;
+        --muted: #657085;
+        --border: #d9dee8;
+        --primary: #2457d6;
+        --danger: #b42318;
+        --warning: #b54708;
+        --ok: #027a48;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 32px auto;
+      }
+
+      header {
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        margin: 0 0 6px;
+        font-size: 28px;
+        line-height: 1.2;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+        gap: 20px;
+        align-items: start;
+      }
+
+      section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 18px;
+      }
+
+      label {
+        display: block;
+        margin: 14px 0 6px;
+        color: #344054;
+        font-weight: 600;
+      }
+
+      select,
+      input,
+      textarea,
+      button {
+        width: 100%;
+        border-radius: 6px;
+        font: inherit;
+      }
+
+      select,
+      input,
+      textarea {
+        border: 1px solid var(--border);
+        background: #fff;
+        padding: 10px 12px;
+      }
+
+      textarea {
+        min-height: 360px;
+        resize: vertical;
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        line-height: 1.5;
+      }
+
+      button {
+        margin-top: 16px;
+        border: 0;
+        background: var(--primary);
+        color: #fff;
+        padding: 11px 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .tab {
+        border: 1px solid var(--border);
+        background: #fff;
+        color: var(--text);
+        margin: 0;
+      }
+
+      .tab.active {
+        background: #eaf0ff;
+        border-color: #a9bcf5;
+        color: #173b91;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      .summary {
+        margin: 12px 0 16px;
+        padding: 12px;
+        background: #f8fafc;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: #344054;
+      }
+
+      .issue {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        margin-top: 12px;
+      }
+
+      .issue-header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 12px;
+        font-weight: 700;
+        background: #eef2f6;
+        color: #344054;
+      }
+
+      .high {
+        background: #fee4e2;
+        color: var(--danger);
+      }
+
+      .medium {
+        background: #fef0c7;
+        color: var(--warning);
+      }
+
+      .low {
+        background: #dcfae6;
+        color: var(--ok);
+      }
+
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: #101828;
+        color: #f9fafb;
+        border-radius: 6px;
+        padding: 12px;
+        margin: 16px 0 0;
+      }
+
+      .error {
+        color: var(--danger);
+        font-weight: 600;
+      }
+
+      @media (max-width: 840px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Code Review MVP</h1>
+        <p>FastAPI + DeepSeek/mock 的最小代码评审闭环。</p>
+      </header>
+
+      <div class="workspace">
+        <section>
+          <div class="tabs">
+            <button class="tab active" type="button" data-mode="code">粘贴代码</button>
+            <button class="tab" type="button" data-mode="file">上传文件</button>
+            <button class="tab" type="button" data-mode="repo">仓库路径</button>
+          </div>
+
+          <label for="language">语言</label>
+          <select id="language">
+            <option value="python">Python</option>
+            <option value="javascript">JavaScript</option>
+            <option value="typescript">TypeScript</option>
+            <option value="c">C</option>
+            <option value="cpp">C++</option>
+            <option value="java">Java</option>
+          </select>
+
+          <div id="code-panel">
+            <label for="code">代码</label>
+            <textarea id="code">def add(a,b): return a-b</textarea>
+          </div>
+
+          <div id="file-panel" class="hidden">
+            <label for="file">代码文件</label>
+            <input id="file" type="file" />
+          </div>
+
+          <div id="repo-panel" class="hidden">
+            <label for="repo">本地仓库或目录路径</label>
+            <input id="repo" placeholder="/workspace/code-reviewer-mvp" />
+          </div>
+
+          <button id="review" type="button">开始评审</button>
+        </section>
+
+        <section>
+          <h2>评审结果</h2>
+          <div id="result" class="summary">等待提交代码。</div>
+          <pre id="raw" class="hidden"></pre>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const tabs = document.querySelectorAll(".tab");
+      const panels = {
+        code: document.querySelector("#code-panel"),
+        file: document.querySelector("#file-panel"),
+        repo: document.querySelector("#repo-panel"),
+      };
+      const button = document.querySelector("#review");
+      const result = document.querySelector("#result");
+      const raw = document.querySelector("#raw");
+      let mode = "code";
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          mode = tab.dataset.mode;
+          tabs.forEach((item) => item.classList.toggle("active", item === tab));
+          Object.entries(panels).forEach(([name, panel]) => {
+            panel.classList.toggle("hidden", name !== mode);
+          });
+        });
+      });
+
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        result.className = "summary";
+        result.textContent = "评审中...";
+        raw.classList.add("hidden");
+
+        try {
+          const data = await submitReview();
+          renderResult(data);
+        } catch (error) {
+          result.className = "summary error";
+          result.textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      async function submitReview() {
+        const language = document.querySelector("#language").value;
+
+        if (mode === "file") {
+          const file = document.querySelector("#file").files[0];
+          if (!file) throw new Error("请选择一个代码文件。");
+          const form = new FormData();
+          form.append("language", language);
+          form.append("file", file);
+          const response = await fetch("/api/review/file", { method: "POST", body: form });
+          return readJson(response);
+        }
+
+        const payload =
+          mode === "repo"
+            ? { language, repository_path: document.querySelector("#repo").value.trim() }
+            : { language, code: document.querySelector("#code").value };
+
+        const response = await fetch("/api/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        return readJson(response);
+      }
+
+      async function readJson(response) {
+        const data = await response.json();
+        if (!response.ok) {
+          const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+          throw new Error(detail || `请求失败: ${response.status}`);
+        }
+        return data;
+      }
+
+      function renderResult(data) {
+        const issues = data.issues || [];
+        result.className = "summary";
+        result.innerHTML = `<strong>总结：</strong>${escapeHtml(data.summary)}<br><strong>问题数：</strong>${issues.length}`;
+
+        for (const issue of issues) {
+          const node = document.createElement("div");
+          node.className = "issue";
+          node.innerHTML = `
+            <div class="issue-header">
+              <span class="badge ${issue.severity}">${escapeHtml(issue.severity)}</span>
+              <span class="badge">${escapeHtml(issue.category)}</span>
+              <span class="badge">line ${issue.line ?? "?"}</span>
+            </div>
+            <div><strong>问题：</strong>${escapeHtml(issue.message)}</div>
+            <div><strong>建议：</strong>${escapeHtml(issue.suggestion)}</div>
+          `;
+          result.appendChild(node);
+        }
+
+        raw.textContent = JSON.stringify(data, null, 2);
+        raw.classList.remove("hidden");
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+    </script>
+  </body>
+</html>
