@@ -135,8 +135,7 @@ def format_diff_for_review(files: list[ChangedFile]) -> str:
 def _run_git_diff(root: Path) -> str:
     try:
         result = subprocess.run(
-            ["git", "diff", "main...HEAD"],
-            cwd=root,
+            ["git", "-C", str(root), "diff", "main...HEAD"],
             text=True,
             capture_output=True,
             check=False,

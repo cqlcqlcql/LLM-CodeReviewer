@@ -79,30 +79,60 @@ class MockReviewer(CodeReviewer):
         return ReviewResponse(summary=f"Found {len(issues)} issue(s).", issues=issues)
 
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
+        if language.lower() == "python":
+            add_issue = _find_added_python_add_subtract_issue(diff_context)
+            if add_issue is not None:
+                return ReviewResponse(
+                    summary="Found 1 issue(s) in changed lines.",
+                    issues=[
+                        {
+                            "file_path": add_issue[0],
+                            "severity": "high",
+                            "category": "logic_bug",
+                            "line": add_issue[1],
+                            "message": "add function returns subtraction in the changed diff hunk.",
+                            "suggestion": "Change the add function to return a + b.",
+                        }
+                    ],
+                )
+
         issues = []
         current_file: str | None = None
+        pending_python_add: tuple[str | None, int | None] | None = None
         for line in diff_context.splitlines():
             if line.startswith("FILE: "):
                 current_file = line.removeprefix("FILE: ").strip()
+                pending_python_add = None
                 continue
-            if not line.startswith("ADDED "):
+
+            is_added = line.startswith("ADDED ")
+            is_context = line.startswith("CONTEXT ")
+            if not is_added and not is_context:
                 continue
 
             line_number = _extract_new_line_number(line)
             content = line.split(": ", 1)[1] if ": " in line else line
             normalized = re.sub(r"\s+", "", content)
 
-            if language.lower() == "python" and "defadd(" in normalized and "returna-b" in normalized:
+            if language.lower() == "python" and is_added and "defadd(" in normalized:
+                pending_python_add = (current_file, line_number)
+
+            if language.lower() == "python" and (
+                is_added and "defadd(" in normalized and "returna-b" in normalized
+                or pending_python_add is not None and "returna-b" in normalized
+            ):
+                issue_file, issue_line = pending_python_add or (current_file, line_number)
                 issues.append(
                     {
-                        "file_path": current_file,
+                        "file_path": issue_file,
                         "severity": "high",
                         "category": "logic_bug",
-                        "line": line_number,
+                        "line": issue_line,
                         "message": "add function returns subtraction on a changed line.",
                         "suggestion": "Change the added return expression from a-b to a+b.",
                     }
                 )
+                pending_python_add = None
             elif "TODO" in content or "FIXME" in content:
                 issues.append(
                     {
@@ -214,3 +244,40 @@ def _extract_new_line_number(line: str) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _find_added_python_add_subtract_issue(diff_context: str) -> tuple[str | None, int] | None:
+    current_file: str | None = None
+    hunk_lines: list[str] = []
+
+    for line in [*diff_context.splitlines(), "FILE: __end__"]:
+        if line.startswith("FILE: "):
+            issue = _find_issue_in_hunk(current_file, hunk_lines)
+            if issue is not None:
+                return issue
+            current_file = line.removeprefix("FILE: ").strip()
+            hunk_lines = []
+        else:
+            hunk_lines.append(line)
+
+    return None
+
+
+def _find_issue_in_hunk(file_path: str | None, hunk_lines: list[str]) -> tuple[str | None, int] | None:
+    for index, line in enumerate(hunk_lines):
+        if not line.startswith("ADDED "):
+            continue
+
+        content = line.split(": ", 1)[1] if ": " in line else line
+        if "defadd(" not in re.sub(r"\s+", "", content):
+            continue
+
+        line_number = _extract_new_line_number(line)
+        if line_number is None:
+            continue
+
+        following = "\n".join(hunk_lines[index : index + 8])
+        if "returna-b" in re.sub(r"\s+", "", following):
+            return file_path, line_number
+
+    return None
