@@ -18,13 +18,14 @@ REVIEW_JSON_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "file_path": {"type": ["string", "null"]},
                     "severity": {"type": "string", "enum": ["low", "medium", "high"]},
                     "category": {"type": "string"},
                     "line": {"type": ["integer", "null"]},
                     "message": {"type": "string"},
                     "suggestion": {"type": "string"},
                 },
-                "required": ["severity", "category", "line", "message", "suggestion"],
+                "required": ["file_path", "severity", "category", "line", "message", "suggestion"],
             },
         },
     },
@@ -37,20 +38,25 @@ class CodeReviewer(ABC):
     async def review(self, language: str, code: str) -> ReviewResponse:
         raise NotImplementedError
 
+    @abstractmethod
+    async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
+        raise NotImplementedError
+
 
 class MockReviewer(CodeReviewer):
     async def review(self, language: str, code: str) -> ReviewResponse:
         normalized = re.sub(r"\s+", "", code)
         if language.lower() == "python" and "defadd(" in normalized and "returna-b" in normalized:
             return ReviewResponse(
-                summary="函数名与实际行为不一致",
+                summary="Function name does not match behavior.",
                 issues=[
                     {
+                        "file_path": None,
                         "severity": "high",
                         "category": "logic_bug",
                         "line": 1,
-                        "message": "add 函数实际执行了减法",
-                        "suggestion": "将 return a-b 改为 return a+b",
+                        "message": "add function performs subtraction.",
+                        "suggestion": "Change return a-b to return a+b.",
                     }
                 ],
             )
@@ -59,23 +65,65 @@ class MockReviewer(CodeReviewer):
         if "TODO" in code or "FIXME" in code:
             issues.append(
                 {
+                    "file_path": None,
                     "severity": "low",
                     "category": "maintainability",
                     "line": _find_first_line(code, ("TODO", "FIXME")),
-                    "message": "代码中存在待办标记",
-                    "suggestion": "将 TODO/FIXME 转换为明确的问题、测试或实现任务。",
+                    "message": "Code contains a TODO/FIXME marker.",
+                    "suggestion": "Convert the marker into a clear issue, test, or implementation task.",
                 }
             )
 
         if not issues:
-            return ReviewResponse(summary="未发现明显问题", issues=[])
-        return ReviewResponse(summary=f"发现 {len(issues)} 个可改进点", issues=issues)
+            return ReviewResponse(summary="No obvious issues found.", issues=[])
+        return ReviewResponse(summary=f"Found {len(issues)} issue(s).", issues=issues)
+
+    async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
+        issues = []
+        current_file: str | None = None
+        for line in diff_context.splitlines():
+            if line.startswith("FILE: "):
+                current_file = line.removeprefix("FILE: ").strip()
+                continue
+            if not line.startswith("ADDED "):
+                continue
+
+            line_number = _extract_new_line_number(line)
+            content = line.split(": ", 1)[1] if ": " in line else line
+            normalized = re.sub(r"\s+", "", content)
+
+            if language.lower() == "python" and "defadd(" in normalized and "returna-b" in normalized:
+                issues.append(
+                    {
+                        "file_path": current_file,
+                        "severity": "high",
+                        "category": "logic_bug",
+                        "line": line_number,
+                        "message": "add function returns subtraction on a changed line.",
+                        "suggestion": "Change the added return expression from a-b to a+b.",
+                    }
+                )
+            elif "TODO" in content or "FIXME" in content:
+                issues.append(
+                    {
+                        "file_path": current_file,
+                        "severity": "low",
+                        "category": "maintainability",
+                        "line": line_number,
+                        "message": "Changed code leaves a TODO/FIXME marker.",
+                        "suggestion": "Convert the marker into a tracked task or complete the implementation.",
+                    }
+                )
+
+        if not issues:
+            return ReviewResponse(summary="No issues found in changed lines.", issues=[])
+        return ReviewResponse(summary=f"Found {len(issues)} issue(s) in changed lines.", issues=issues)
 
 
 class DeepSeekReviewer(CodeReviewer):
     def __init__(self, settings: Settings):
         if not settings.deepseek_api_key:
-            raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY 未配置")
+            raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY is not configured")
         self.settings = settings
         self.client = AsyncOpenAI(
             api_key=settings.deepseek_api_key,
@@ -84,47 +132,68 @@ class DeepSeekReviewer(CodeReviewer):
 
     async def review(self, language: str, code: str) -> ReviewResponse:
         prompt = f"""
-请你扮演严谨的代码评审助手，检查下面的 {language} 代码。
+Please act as a careful code review assistant and inspect the following {language} code.
+Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
 
-只输出 JSON，不要输出 Markdown，不要添加解释性前后缀。
-JSON 必须符合这个结构：
-{json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
+Focus on:
+1. Logic bugs
+2. Potential runtime exceptions
+3. Security issues
+4. Maintainability issues
+5. Whether names and behavior match
 
-评审重点：
-1. 逻辑错误
-2. 潜在运行时异常
-3. 安全问题
-4. 可维护性问题
-5. 命名与行为是否一致
-
-代码：
+Code:
 ```{language}
 {code}
 ```
 """.strip()
 
+        return await self._complete_review(prompt)
+
+    async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
+        prompt = f"""
+You are a code review assistant.
+Review only the added or modified code in the diff context below.
+Use context lines only to understand the change.
+Do not comment on unchanged context lines or removed lines.
+Do not give generic advice.
+Every issue must include file_path, line, severity, reason in message, and suggestion.
+If there are no real issues, return an empty issues array.
+Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
+
+Language: {language}
+
+Diff context:
+```text
+{diff_context}
+```
+""".strip()
+
+        return await self._complete_review(prompt)
+
+    async def _complete_review(self, prompt: str) -> ReviewResponse:
         try:
             completion = await self.client.chat.completions.create(
                 model=self.settings.deepseek_model,
                 messages=[
-                    {"role": "system", "content": "你是一个只返回严格 JSON 的代码评审助手。"},
+                    {"role": "system", "content": "You are a code review assistant that returns strict JSON only."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
                 response_format={"type": "json_object"},
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"DeepSeek 调用失败: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"DeepSeek request failed: {exc}") from exc
 
         content = completion.choices[0].message.content
         if not content:
-            raise HTTPException(status_code=502, detail="DeepSeek 返回了空内容")
+            raise HTTPException(status_code=502, detail="DeepSeek returned empty content")
 
         try:
             data = json.loads(content)
             return ReviewResponse.model_validate(data)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"LLM 返回 JSON 不符合约束: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"LLM JSON did not match the contract: {exc}") from exc
 
 
 def build_reviewer(settings: Settings) -> CodeReviewer:
@@ -138,3 +207,10 @@ def _find_first_line(code: str, keywords: tuple[str, ...]) -> int | None:
         if any(keyword in line for keyword in keywords):
             return index
     return None
+
+
+def _extract_new_line_number(line: str) -> int | None:
+    match = re.search(r"new_line=(\d+)", line)
+    if not match:
+        return None
+    return int(match.group(1))

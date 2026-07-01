@@ -344,6 +344,7 @@
             <div class="issue-header">
               <span class="badge ${issue.severity}">${escapeHtml(issue.severity)}</span>
               <span class="badge">${escapeHtml(issue.category)}</span>
+              <span class="badge">${escapeHtml(issue.file_path ?? "pasted code")}</span>
               <span class="badge">line ${issue.line ?? "?"}</span>
             </div>
             <div><strong>问题：</strong>${escapeHtml(issue.message)}</div>
