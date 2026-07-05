@@ -9,6 +9,7 @@ TestStatus = Literal["passed", "failed", "timeout", "unsupported", "error"]
 
 class ReviewIssue(BaseModel):
     file_path: str | None = None
+    source: str = Field(default="LLM", description="Tool or reviewer that reported the issue")
     severity: Severity
     category: str
     line: int | None = Field(default=None, ge=1)
@@ -28,6 +29,7 @@ class ReviewRequest(BaseModel):
     repository_path: str | None = Field(default=None, description="Local Git repository path")
     base_branch: str = Field(default="main", description="Git base branch used for repository diff reviews")
     run_tests: bool = Field(default=False, description="Run project tests for repository reviews")
+    run_static_analysis: bool = Field(default=True, description="Run local static analysis tools for repository reviews")
 
     @model_validator(mode="after")
     def require_code_or_repository(self) -> "ReviewRequest":

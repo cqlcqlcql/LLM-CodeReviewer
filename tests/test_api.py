@@ -5,7 +5,9 @@ os.environ["LLM_PROVIDER"] = "mock"
 
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app.main import app
+from app.schemas import ReviewIssue
 
 
 client = TestClient(app)
@@ -157,6 +159,84 @@ def test_review_repository_can_include_test_result(tmp_path):
     data = response.json()
     assert data["test_result"]["test_status"] == "passed"
     assert data["test_result"]["command"] == "pytest"
+
+
+def test_review_repository_merges_static_analysis_issues(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+
+    source = tmp_path / "calculator.py"
+    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    _git(tmp_path, "add", "calculator.py")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "checkout", "-b", "feature/review-me")
+
+    source.write_text("def add(a, b):\n    unused = 1\n    return a + b\n", encoding="utf-8")
+    _git(tmp_path, "add", "calculator.py")
+    _git(tmp_path, "commit", "-m", "add unused variable")
+
+    def fake_static_analysis(repository_path, language):
+        return [
+            ReviewIssue(
+                source="ruff",
+                file_path="calculator.py",
+                severity="low",
+                category="F841",
+                line=2,
+                message="Local variable `unused` is assigned to but never used.",
+                suggestion="Remove the unused variable.",
+            )
+        ]
+
+    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
+
+    response = client.post(
+        "/api/review",
+        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "main"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["issues"][0]["source"] == "ruff"
+    assert data["issues"][0]["category"] == "F841"
+    assert "Static sources: ruff: 1" in data["summary"]
+
+
+def test_review_repository_without_diff_can_still_run_static_analysis(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+
+    source = tmp_path / "calculator.py"
+    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    _git(tmp_path, "add", "calculator.py")
+    _git(tmp_path, "commit", "-m", "initial")
+
+    def fake_static_analysis(repository_path, language):
+        return [
+            ReviewIssue(
+                source="mypy",
+                file_path="calculator.py",
+                severity="medium",
+                category="type_error",
+                line=1,
+                message="Example type issue.",
+                suggestion="Add type annotations.",
+            )
+        ]
+
+    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
+
+    response = client.post(
+        "/api/review",
+        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "main"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"] == "No diff found for main...HEAD. Static sources: mypy: 1."
+    assert data["issues"][0]["source"] == "mypy"
 
 
 def test_review_requires_code_or_repository():

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from fastapi import HTTPException
 from openai import AsyncOpenAI
 
-from app.schemas import ReviewResponse
+from app.schemas import ReviewIssue, ReviewResponse
 from app.settings import Settings
 
 
@@ -54,28 +54,28 @@ class MockReviewer(CodeReviewer):
             return ReviewResponse(
                 summary="Function name does not match behavior.",
                 issues=[
-                    {
-                        "file_path": None,
-                        "severity": "high",
-                        "category": "logic_bug",
-                        "line": 1,
-                        "message": "add function performs subtraction.",
-                        "suggestion": "Change return a-b to return a+b.",
-                    }
+                    ReviewIssue(
+                        file_path=None,
+                        severity="high",
+                        category="logic_bug",
+                        line=1,
+                        message="add function performs subtraction.",
+                        suggestion="Change return a-b to return a+b.",
+                    )
                 ],
             )
 
-        issues = []
+        issues: list[ReviewIssue] = []
         if "TODO" in code or "FIXME" in code:
             issues.append(
-                {
-                    "file_path": None,
-                    "severity": "low",
-                    "category": "maintainability",
-                    "line": _find_first_line(code, ("TODO", "FIXME")),
-                    "message": "Code contains a TODO/FIXME marker.",
-                    "suggestion": "Convert the marker into a clear issue, test, or implementation task.",
-                }
+                ReviewIssue(
+                    file_path=None,
+                    severity="low",
+                    category="maintainability",
+                    line=_find_first_line(code, ("TODO", "FIXME")),
+                    message="Code contains a TODO/FIXME marker.",
+                    suggestion="Convert the marker into a clear issue, test, or implementation task.",
+                )
             )
 
         if not issues:
@@ -89,18 +89,18 @@ class MockReviewer(CodeReviewer):
                 return ReviewResponse(
                     summary="Found 1 issue(s) in changed lines.",
                     issues=[
-                        {
-                            "file_path": add_issue[0],
-                            "severity": "high",
-                            "category": "logic_bug",
-                            "line": add_issue[1],
-                            "message": "add function returns subtraction in the changed diff hunk.",
-                            "suggestion": "Change the add function to return a + b.",
-                        }
+                        ReviewIssue(
+                            file_path=add_issue[0],
+                            severity="high",
+                            category="logic_bug",
+                            line=add_issue[1],
+                            message="add function returns subtraction in the changed diff hunk.",
+                            suggestion="Change the add function to return a + b.",
+                        )
                     ],
                 )
 
-        issues = []
+        issues: list[ReviewIssue] = []
         current_file: str | None = None
         pending_python_add: tuple[str | None, int | None] | None = None
         for line in diff_context.splitlines():
@@ -127,26 +127,26 @@ class MockReviewer(CodeReviewer):
             ):
                 issue_file, issue_line = pending_python_add or (current_file, line_number)
                 issues.append(
-                    {
-                        "file_path": issue_file,
-                        "severity": "high",
-                        "category": "logic_bug",
-                        "line": issue_line,
-                        "message": "add function returns subtraction on a changed line.",
-                        "suggestion": "Change the added return expression from a-b to a+b.",
-                    }
+                    ReviewIssue(
+                        file_path=issue_file,
+                        severity="high",
+                        category="logic_bug",
+                        line=issue_line,
+                        message="add function returns subtraction on a changed line.",
+                        suggestion="Change the added return expression from a-b to a+b.",
+                    )
                 )
                 pending_python_add = None
             elif "TODO" in content or "FIXME" in content:
                 issues.append(
-                    {
-                        "file_path": current_file,
-                        "severity": "low",
-                        "category": "maintainability",
-                        "line": line_number,
-                        "message": "Changed code leaves a TODO/FIXME marker.",
-                        "suggestion": "Convert the marker into a tracked task or complete the implementation.",
-                    }
+                    ReviewIssue(
+                        file_path=current_file,
+                        severity="low",
+                        category="maintainability",
+                        line=line_number,
+                        message="Changed code leaves a TODO/FIXME marker.",
+                        suggestion="Convert the marker into a tracked task or complete the implementation.",
+                    )
                 )
 
         if not issues:

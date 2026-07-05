@@ -4,10 +4,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from fastapi import HTTPException
 
-from app.schemas import TestRunResponse as ProjectTestRunResponse
+from app.schemas import TestStatus, TestRunResponse as ProjectTestRunResponse
 from app.services.code_loader import trim_code
 from app.services.llm import CodeReviewer
 
@@ -68,7 +69,7 @@ async def run_project_tests(
         )
 
     log_excerpt = _build_log_excerpt(result.stdout, result.stderr)
-    status = "passed" if result.returncode == 0 else "failed"
+    status = cast(TestStatus, "passed" if result.returncode == 0 else "failed")
     failed_cases = 0 if status == "passed" else _extract_failed_case_count(log_excerpt)
     explanation = None
     if status == "failed":
