@@ -40,14 +40,22 @@
         margin-bottom: 20px;
       }
 
-      h1 {
-        margin: 0 0 6px;
-        font-size: 28px;
+      h1,
+      h2 {
+        margin: 0;
         line-height: 1.2;
       }
 
+      h1 {
+        font-size: 28px;
+      }
+
+      h2 {
+        font-size: 20px;
+      }
+
       p {
-        margin: 0;
+        margin: 6px 0 0;
         color: var(--muted);
       }
 
@@ -131,6 +139,20 @@
         color: #173b91;
       }
 
+      .checkbox-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 14px;
+        color: #344054;
+        font-weight: 600;
+      }
+
+      .checkbox-row input {
+        width: 18px;
+        height: 18px;
+      }
+
       .hidden {
         display: none;
       }
@@ -144,7 +166,8 @@
         color: #344054;
       }
 
-      .issue {
+      .issue,
+      .test-result {
         border: 1px solid var(--border);
         border-radius: 8px;
         padding: 12px;
@@ -170,7 +193,10 @@
         color: #344054;
       }
 
-      .high {
+      .high,
+      .failed,
+      .timeout,
+      .error {
         background: #fee4e2;
         color: var(--danger);
       }
@@ -180,9 +206,15 @@
         color: var(--warning);
       }
 
-      .low {
+      .low,
+      .passed {
         background: #dcfae6;
         color: var(--ok);
+      }
+
+      .unsupported {
+        background: #f2f4f7;
+        color: #475467;
       }
 
       pre {
@@ -195,7 +227,7 @@
         margin: 16px 0 0;
       }
 
-      .error {
+      .error-text {
         color: var(--danger);
         font-weight: 600;
       }
@@ -211,7 +243,7 @@
     <main>
       <header>
         <h1>Code Review MVP</h1>
-        <p>FastAPI + DeepSeek/mock 的最小代码评审闭环。</p>
+        <p>AI 代码评审、Git diff 检查与自动化测试结果分析。</p>
       </header>
 
       <div class="workspace">
@@ -243,8 +275,16 @@
           </div>
 
           <div id="repo-panel" class="hidden">
-            <label for="repo">本地仓库或目录路径</label>
-            <input id="repo" placeholder="/workspace/code-reviewer-mvp" />
+            <label for="repo">本地仓库路径</label>
+            <input id="repo" placeholder="D:\profile\code-reviewer-mvp" />
+
+            <label for="base-branch">基础分支</label>
+            <input id="base-branch" value="main" placeholder="main / master / develop" />
+
+            <label class="checkbox-row" for="run-tests">
+              <input id="run-tests" type="checkbox" />
+              运行自动化测试
+            </label>
           </div>
 
           <button id="review" type="button">开始评审</button>
@@ -290,7 +330,7 @@
           const data = await submitReview();
           renderResult(data);
         } catch (error) {
-          result.className = "summary error";
+          result.className = "summary error-text";
           result.textContent = error.message;
         } finally {
           button.disabled = false;
@@ -312,7 +352,12 @@
 
         const payload =
           mode === "repo"
-            ? { language, repository_path: document.querySelector("#repo").value.trim() }
+            ? {
+                language,
+                repository_path: document.querySelector("#repo").value.trim(),
+                base_branch: document.querySelector("#base-branch").value.trim() || "main",
+                run_tests: document.querySelector("#run-tests").checked,
+              }
             : { language, code: document.querySelector("#code").value };
 
         const response = await fetch("/api/review", {
@@ -324,11 +369,23 @@
       }
 
       async function readJson(response) {
-        const data = await response.json();
+        const text = await response.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = null;
+        }
         if (!response.ok) {
-          const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+          const detail =
+            data && typeof data.detail === "string"
+              ? data.detail
+              : data && data.detail
+                ? JSON.stringify(data.detail)
+                : text;
           throw new Error(detail || `请求失败: ${response.status}`);
         }
+        if (!data) throw new Error("后端返回了空响应或非 JSON 响应。");
         return data;
       }
 
@@ -353,8 +410,31 @@
           result.appendChild(node);
         }
 
+        if (data.test_result) {
+          result.appendChild(renderTestResult(data.test_result));
+        }
+
         raw.textContent = JSON.stringify(data, null, 2);
         raw.classList.remove("hidden");
+      }
+
+      function renderTestResult(test) {
+        const node = document.createElement("div");
+        node.className = "test-result";
+        node.innerHTML = `
+          <div class="issue-header">
+            <span class="badge ${test.test_status}">${escapeHtml(test.test_status)}</span>
+            <span class="badge">${escapeHtml(test.command ?? "no command")}</span>
+            <span class="badge">failed ${test.failed_cases ?? "?"}</span>
+          </div>
+          ${
+            test.llm_explanation
+              ? `<div><strong>测试分析：</strong>${escapeHtml(test.llm_explanation)}</div>`
+              : ""
+          }
+          <pre>${escapeHtml(test.log_excerpt || "")}</pre>
+        `;
+        return node;
       }
 
       function escapeHtml(value) {

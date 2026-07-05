@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.schemas import ReviewRequest, ReviewResponse
+from app.schemas import ReviewRequest, ReviewResponse, TestRunRequest, TestRunResponse
 from app.services.code_loader import trim_code
 from app.services.diff_loader import load_repository_diff
 from app.services.llm import build_reviewer
+from app.services.test_runner import run_project_tests
 from app.settings import get_settings
 
 app = FastAPI(title="Code Review MVP", version="0.1.0")
@@ -38,8 +39,20 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     settings = get_settings()
     reviewer = build_reviewer(settings)
     if payload.repository_path:
-        diff_context = load_repository_diff(payload.repository_path, settings.max_code_chars)
-        return await reviewer.review_diff(payload.language, diff_context)
+        diff_context = load_repository_diff(
+            payload.repository_path,
+            settings.max_code_chars,
+            payload.base_branch,
+        )
+        response = await reviewer.review_diff(payload.language, diff_context)
+        if payload.run_tests:
+            response.test_result = await run_project_tests(
+                payload.repository_path,
+                payload.language,
+                60,
+                reviewer,
+            )
+        return response
 
     code = payload.code
     assert code is not None
@@ -57,3 +70,15 @@ async def review_file(
     code = raw.decode("utf-8", errors="ignore")
     reviewer = build_reviewer(settings)
     return await reviewer.review(language, trim_code(code, settings.max_code_chars))
+
+
+@app.post("/api/test", response_model=TestRunResponse)
+async def test_project(payload: TestRunRequest) -> TestRunResponse:
+    settings = get_settings()
+    reviewer = build_reviewer(settings)
+    return await run_project_tests(
+        payload.repository_path,
+        payload.language,
+        payload.timeout_seconds,
+        reviewer,
+    )

@@ -1,10 +1,14 @@
 # Phase 2: Git Diff Review
 
-Repository-path reviews now inspect changes from:
+Repository-path reviews inspect changes from a configurable base branch:
 
 ```bash
-git diff main...HEAD
+git diff <base_branch>...HEAD
 ```
+
+The API defaults `base_branch` to `main`, but callers can pass values such as
+`master` or `develop` when the reviewed repository uses a different default
+branch.
 
 The backend parses the unified diff by file and hunk, then sends the reviewer:
 

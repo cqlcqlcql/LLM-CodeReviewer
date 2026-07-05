@@ -42,6 +42,10 @@ class CodeReviewer(ABC):
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         raise NotImplementedError
 
+    @abstractmethod
+    async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
+        raise NotImplementedError
+
 
 class MockReviewer(CodeReviewer):
     async def review(self, language: str, code: str) -> ReviewResponse:
@@ -149,6 +153,13 @@ class MockReviewer(CodeReviewer):
             return ReviewResponse(summary="No issues found in changed lines.", issues=[])
         return ReviewResponse(summary=f"Found {len(issues)} issue(s) in changed lines.", issues=issues)
 
+    async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
+        if "assert" in log_excerpt.lower():
+            return f"{command} failed because one or more assertions did not match the expected behavior."
+        if "error" in log_excerpt.lower() or "exception" in log_excerpt.lower():
+            return f"{command} failed because the test run raised an error or exception."
+        return f"{command} failed. Review the captured log excerpt for the first failing case and traceback."
+
 
 class DeepSeekReviewer(CodeReviewer):
     def __init__(self, settings: Settings):
@@ -200,6 +211,38 @@ Diff context:
 """.strip()
 
         return await self._complete_review(prompt)
+
+    async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
+        prompt = f"""
+You are helping explain a failed automated test run.
+Be concise and actionable. Mention the most likely cause and the next thing to inspect.
+Do not invent files or functions that are not visible in the log.
+
+Command:
+{command}
+
+Test log:
+```text
+{log_excerpt}
+```
+""".strip()
+
+        try:
+            completion = await self.client.chat.completions.create(
+                model=self.settings.deepseek_model,
+                messages=[
+                    {"role": "system", "content": "You explain test failures concisely."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"DeepSeek request failed: {exc}") from exc
+
+        content = completion.choices[0].message.content
+        if not content:
+            raise HTTPException(status_code=502, detail="DeepSeek returned empty content")
+        return content.strip()
 
     async def _complete_review(self, prompt: str) -> ReviewResponse:
         try:
