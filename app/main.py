@@ -4,7 +4,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.schemas import ReviewRequest, ReviewResponse
-from app.services.code_loader import load_repository_code, trim_code
+from app.services.code_loader import trim_code
+from app.services.diff_loader import load_repository_diff
 from app.services.llm import build_reviewer
 from app.settings import get_settings
 
@@ -35,12 +36,14 @@ async def health() -> dict[str, str]:
 @app.post("/api/review", response_model=ReviewResponse)
 async def review_code(payload: ReviewRequest) -> ReviewResponse:
     settings = get_settings()
-    code = payload.code
+    reviewer = build_reviewer(settings)
     if payload.repository_path:
-        code = load_repository_code(payload.repository_path, payload.language, settings.max_code_chars)
+        diff_context = load_repository_diff(payload.repository_path, settings.max_code_chars)
+        return await reviewer.review_diff(payload.language, diff_context)
+
+    code = payload.code
     assert code is not None
 
-    reviewer = build_reviewer(settings)
     return await reviewer.review(payload.language, trim_code(code, settings.max_code_chars))
 
 
