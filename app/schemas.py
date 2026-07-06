@@ -20,6 +20,7 @@ class ReviewIssue(BaseModel):
 class ReviewResponse(BaseModel):
     summary: str
     issues: list[ReviewIssue]
+    notices: list[str] = Field(default_factory=list, description="Non-issue status messages for the review run")
     test_result: "TestRunResponse | None" = None
 
 

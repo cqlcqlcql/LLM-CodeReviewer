@@ -11,7 +11,6 @@ from fastapi import HTTPException
 
 from app.schemas import ReviewIssue, Severity
 from app.services.code_loader import trim_code
-from app.services.test_runner import _extract_failed_case_count
 
 
 STATIC_LOG_EXCERPT_CHARS = 1600
@@ -69,14 +68,10 @@ def _detect_static_commands(root: Path, language: str | None) -> list[StaticAnal
                 ),
             ]
         )
-        if _has_python_tests(root):
-            commands.append(StaticAnalysisCommand("pytest", "pytest", [sys.executable, "-m", "pytest"]))
-
     if (root / "package.json").exists() or normalized in {"javascript", "typescript", "js", "ts"}:
         commands.extend(
             [
                 StaticAnalysisCommand("npm", "npm run lint", [_platform_command("npm"), "run", "lint"]),
-                StaticAnalysisCommand("npm", "npm test", [_platform_command("npm"), "test"]),
             ]
         )
 
@@ -117,11 +112,8 @@ def _parse_command_issues(command: StaticAnalysisCommand, result: subprocess.Com
         return _parse_mypy_issues(result.stdout)
     if command.source == "bandit":
         return _parse_bandit_issues(result.stdout)
-    if command.display == "pytest":
-        return [_build_process_issue(command, result, "test_failure", "Automated tests failed.")]
-    if command.display in {"npm run lint", "npm test"}:
-        category = "lint_failure" if command.display == "npm run lint" else "test_failure"
-        return [_build_process_issue(command, result, category, f"{command.display} failed.")]
+    if command.display == "npm run lint":
+        return [_build_process_issue(command, result, "lint_failure", f"{command.display} failed.")]
 
     return [_build_process_issue(command, result, "tool_failure", f"{command.display} failed.")]
 
@@ -211,14 +203,11 @@ def _build_process_issue(
     message: str,
 ) -> ReviewIssue:
     log_excerpt = _build_log_excerpt(result.stdout, result.stderr)
-    failed_cases = _extract_failed_case_count(log_excerpt) if command.display == "pytest" else None
     detail = f"{message} Exit code: {result.returncode}."
-    if failed_cases is not None:
-        detail = f"{message} Failed cases: {failed_cases}."
     return ReviewIssue(
         source=command.source,
         file_path=None,
-        severity=cast(Severity, "high" if category == "test_failure" else "medium"),
+        severity=cast(Severity, "medium"),
         category=category,
         line=None,
         message=detail,

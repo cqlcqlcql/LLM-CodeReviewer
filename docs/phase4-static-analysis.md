@@ -2,7 +2,7 @@
 
 Phase 4 runs deterministic local tools before relying only on the LLM. Repository
 reviews now return one merged `issues` list where every item includes a `source`
-field, such as `LLM`, `ruff`, `mypy`, `bandit`, `pytest`, or `npm`.
+field, such as `LLM`, `ruff`, `mypy`, `bandit`, or `npm`.
 
 Supported tool detection:
 
@@ -11,9 +11,7 @@ Supported tool detection:
 | Python | `ruff check .` | `ruff` |
 | Python | `mypy .` | `mypy` |
 | Python | `bandit -r .` | `bandit` |
-| Python with tests | `pytest` | `pytest` |
 | JavaScript/TypeScript | `npm run lint` | `npm` |
-| JavaScript/TypeScript | `npm test` | `npm` |
 
 Repository review enables static analysis by default:
 
@@ -34,6 +32,10 @@ the merged review. Tools that run and fail are converted into normal review
 issues with their original source, file path and line number when the tool
 provides them.
 
+Repository review can still run static analysis and tests when the target path
+is not a Git repository. In that case Git diff review is skipped with a neutral
+`notices` message, while tool results are still returned normally.
+
 Example merged issue:
 
 ```json
@@ -48,5 +50,6 @@ Example merged issue:
 }
 ```
 
-`run_tests: true` still returns the detailed `test_result` object from Phase 3.
-The Phase 4 pytest run only contributes a merged issue when tests exist and fail.
+`run_tests: true` returns the detailed `test_result` object from Phase 3.
+Test commands such as `pytest` and `npm test` are not merged as static-analysis
+issues, so test failures appear in one place only.

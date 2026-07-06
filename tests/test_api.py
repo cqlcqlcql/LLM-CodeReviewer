@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.main import app
 from app.schemas import ReviewIssue
+from app.services.static_analysis import run_static_analysis
 
 
 client = TestClient(app)
@@ -235,8 +236,89 @@ def test_review_repository_without_diff_can_still_run_static_analysis(tmp_path, 
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "No diff found for main...HEAD. Static sources: mypy: 1."
+    assert data["summary"] == "No review issues found. Static sources: mypy: 1."
+    assert data["notices"] == ["No diff found for main...HEAD; skipped Git diff review."]
     assert data["issues"][0]["source"] == "mypy"
+
+
+def test_review_non_git_repository_can_still_run_static_analysis_and_tests(tmp_path, monkeypatch):
+    source = tmp_path / "calculator.py"
+    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_calculator.py").write_text(
+        "from calculator import add\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+
+    def fake_static_analysis(repository_path, language):
+        return [
+            ReviewIssue(
+                source="ruff",
+                file_path="calculator.py",
+                severity="low",
+                category="F401",
+                line=1,
+                message="Example lint issue.",
+                suggestion="Remove the unused import.",
+            )
+        ]
+
+    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
+
+    response = client.post(
+        "/api/review",
+        json={"language": "python", "repository_path": str(tmp_path), "run_tests": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"] == "Automated tests passed."
+    assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
+    assert data["issues"][0]["source"] == "ruff"
+    assert data["test_result"]["test_status"] == "passed"
+    assert data["test_result"]["command"] == "pytest"
+
+
+def test_static_analysis_does_not_merge_pytest_failures(tmp_path):
+    (tmp_path / "test_failure.py").write_text(
+        "def test_failure():\n    assert False\n",
+        encoding="utf-8",
+    )
+
+    issues = run_static_analysis(str(tmp_path), "python")
+
+    assert all(issue.source != "pytest" for issue in issues)
+
+
+def test_review_non_git_repository_summarizes_test_failure_without_diff_text(tmp_path):
+    (tmp_path / "test_failure.py").write_text(
+        "def test_failure():\n    assert False\n",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "python",
+            "repository_path": str(tmp_path),
+            "run_static_analysis": False,
+            "run_tests": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"] == (
+        "Automated tests failed with 1 failing case(s). "
+        "pytest failed because one or more assertions did not match the expected behavior."
+    )
+    assert "diff" not in data["summary"].lower()
+    assert "No review issues found" not in data["summary"]
+    assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
+    assert data["issues"] == []
+    assert data["test_result"]["test_status"] == "failed"
 
 
 def test_review_requires_code_or_repository():

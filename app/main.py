@@ -1,3 +1,5 @@
+import re
+
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,9 +50,13 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
                 payload.base_branch,
             )
         except HTTPException as exc:
-            if not _is_no_diff_error(exc):
+            if not _can_continue_without_diff(exc):
                 raise
-            response = ReviewResponse(summary=f"No diff found for {payload.base_branch}...HEAD.", issues=[])
+            response = ReviewResponse(
+                summary="No review issues found.",
+                issues=[],
+                notices=[_diff_unavailable_notice(exc, payload.base_branch)],
+            )
         else:
             response = await reviewer.review_diff(payload.language, diff_context)
         if payload.run_static_analysis:
@@ -64,6 +70,7 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
                 60,
                 reviewer,
             )
+            response.summary = _append_test_result_summary(response.summary, response.test_result)
         return response
 
     code = payload.code
@@ -107,5 +114,56 @@ def _append_static_source_summary(summary: str, issues: list[ReviewIssue]) -> st
     return f"{summary} Static sources: {source_summary}."
 
 
+def _append_test_result_summary(summary: str, test_result: TestRunResponse) -> str:
+    if test_result.test_status == "passed":
+        test_summary = "Automated tests passed."
+    elif test_result.test_status == "failed":
+        if test_result.failed_cases is None:
+            test_summary = "Automated tests failed."
+        else:
+            test_summary = f"Automated tests failed with {test_result.failed_cases} failing case(s)."
+        cause = _first_test_explanation_sentence(test_result.llm_explanation)
+        if cause:
+            test_summary = f"{test_summary} {cause}"
+    elif test_result.test_status == "timeout":
+        test_summary = "Automated tests timed out."
+    elif test_result.test_status == "unsupported":
+        test_summary = "No supported automated test command was detected."
+    else:
+        test_summary = "Automated tests could not be started."
+
+    if summary == "No review issues found." or summary.startswith("No review issues found. Static sources:"):
+        return test_summary
+    return f"{summary} {test_summary}"
+
+
+def _first_test_explanation_sentence(explanation: str | None) -> str:
+    if not explanation:
+        return ""
+    cleaned = re.sub(r"[*_`#>-]+", "", explanation)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    match = re.match(r"(.+?[.!?])(?:\s|$)", cleaned)
+    sentence = match.group(1) if match else cleaned
+    if len(sentence) > 220:
+        sentence = sentence[:217].rstrip() + "..."
+    return sentence
+
+
 def _is_no_diff_error(exc: HTTPException) -> bool:
     return exc.status_code == 400 and isinstance(exc.detail, str) and exc.detail.startswith("No diff found for ")
+
+
+def _is_non_git_repository_error(exc: HTTPException) -> bool:
+    return exc.status_code == 400 and isinstance(exc.detail, str) and exc.detail.startswith("Path is not a Git repository:")
+
+
+def _can_continue_without_diff(exc: HTTPException) -> bool:
+    return _is_no_diff_error(exc) or _is_non_git_repository_error(exc)
+
+
+def _diff_unavailable_notice(exc: HTTPException, base_branch: str) -> str:
+    if _is_no_diff_error(exc):
+        return f"No diff found for {base_branch}...HEAD; skipped Git diff review."
+    return "Path is not a Git repository; skipped Git diff review."

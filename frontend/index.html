@@ -166,6 +166,15 @@
         color: #344054;
       }
 
+      .notice {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid #fedf89;
+        border-radius: 6px;
+        background: #fffaeb;
+        color: #93370d;
+      }
+
       .issue,
       .test-result {
         border: 1px solid var(--border);
@@ -281,6 +290,11 @@
             <label for="base-branch">基础分支</label>
             <input id="base-branch" value="main" placeholder="main / master / develop" />
 
+            <label class="checkbox-row" for="run-static-analysis">
+              <input id="run-static-analysis" type="checkbox" checked />
+              运行静态分析
+            </label>
+
             <label class="checkbox-row" for="run-tests">
               <input id="run-tests" type="checkbox" />
               运行自动化测试
@@ -357,7 +371,7 @@
                 repository_path: document.querySelector("#repo").value.trim(),
                 base_branch: document.querySelector("#base-branch").value.trim() || "main",
                 run_tests: document.querySelector("#run-tests").checked,
-                run_static_analysis: true,
+                run_static_analysis: document.querySelector("#run-static-analysis").checked,
               }
             : { language, code: document.querySelector("#code").value };
 
@@ -392,8 +406,16 @@
 
       function renderResult(data) {
         const issues = data.issues || [];
+        const notices = data.notices || [];
         result.className = "summary";
         result.innerHTML = `<strong>总结：</strong>${escapeHtml(data.summary)}<br><strong>问题数：</strong>${issues.length}`;
+
+        for (const notice of notices) {
+          const node = document.createElement("div");
+          node.className = "notice";
+          node.textContent = notice;
+          result.appendChild(node);
+        }
 
         for (const issue of issues) {
           const node = document.createElement("div");
