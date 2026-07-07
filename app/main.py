@@ -6,9 +6,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.schemas import ReviewIssue, ReviewRequest, ReviewResponse, TestRunRequest, TestRunResponse
+from app.schemas import (
+    ChangedFileSummary,
+    DiffRequest,
+    DiffResponse,
+    ReviewIssue,
+    ReviewRequest,
+    ReviewResponse,
+    TestRunRequest,
+    TestRunResponse,
+)
 from app.services.code_loader import trim_code
-from app.services.diff_loader import load_repository_diff
+from app.services.diff_loader import load_repository_diff, load_repository_unified_diff, parse_unified_diff
 from app.services.llm import build_reviewer
 from app.services.static_analysis import run_static_analysis
 from app.services.test_runner import run_project_tests
@@ -43,6 +52,11 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     settings = get_settings()
     reviewer = build_reviewer(settings)
     if payload.repository_path:
+        diff_context: str | None = None
+        notices: list[str] = []
+        static_issues: list[ReviewIssue] = []
+        test_result: TestRunResponse | None = None
+
         try:
             diff_context = load_repository_diff(
                 payload.repository_path,
@@ -52,25 +66,41 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
         except HTTPException as exc:
             if not _can_continue_without_diff(exc):
                 raise
-            response = ReviewResponse(
-                summary="No review issues found.",
-                issues=[],
-                notices=[_diff_unavailable_notice(exc, payload.base_branch)],
-            )
-        else:
-            response = await reviewer.review_diff(payload.language, diff_context)
+            notices.append(_diff_unavailable_notice(exc, payload.base_branch))
+
         if payload.run_static_analysis:
             static_issues = run_static_analysis(payload.repository_path, payload.language)
-            response.issues.extend(static_issues)
-            response.summary = _append_static_source_summary(response.summary, static_issues)
+
         if payload.run_tests:
-            response.test_result = await run_project_tests(
+            test_result = await run_project_tests(
                 payload.repository_path,
                 payload.language,
                 60,
                 reviewer,
+                explain_failures=False,
             )
-            response.summary = _append_test_result_summary(response.summary, response.test_result)
+
+        if diff_context is not None:
+            response = await reviewer.review_diff(payload.language, diff_context)
+            response.notices.extend(notices)
+        else:
+            response = ReviewResponse(
+                summary="No review issues found.",
+                issues=[],
+                notices=notices,
+            )
+
+        response.issues.extend(static_issues)
+        response.summary = _append_static_source_summary(response.summary, static_issues)
+
+        if test_result is not None:
+            if test_result.test_status == "failed" and test_result.llm_explanation is None and test_result.command:
+                test_result.llm_explanation = await reviewer.explain_test_failure(
+                    test_result.command,
+                    test_result.log_excerpt,
+                )
+            response.test_result = test_result
+            response.summary = _append_test_result_summary(response.summary, test_result)
         return response
 
     code = payload.code
@@ -101,6 +131,21 @@ async def test_project(payload: TestRunRequest) -> TestRunResponse:
         payload.timeout_seconds,
         reviewer,
     )
+
+
+@app.post("/api/diff", response_model=DiffResponse)
+async def repository_diff(payload: DiffRequest) -> DiffResponse:
+    diff = load_repository_unified_diff(payload.repository_path, payload.base_branch)
+    files = [
+        ChangedFileSummary(
+            path=changed_file.path,
+            additions=sum(1 for hunk in changed_file.hunks for line in hunk.lines if line.kind == "+"),
+            deletions=sum(1 for hunk in changed_file.hunks for line in hunk.lines if line.kind == "-"),
+            hunks=len(changed_file.hunks),
+        )
+        for changed_file in parse_unified_diff(diff)
+    ]
+    return DiffResponse(base_branch=payload.base_branch, diff=diff, files=files)
 
 
 def _append_static_source_summary(summary: str, issues: list[ReviewIssue]) -> str:

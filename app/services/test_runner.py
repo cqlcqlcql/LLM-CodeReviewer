@@ -27,6 +27,7 @@ async def run_project_tests(
     language: str | None,
     timeout_seconds: int,
     reviewer: CodeReviewer,
+    explain_failures: bool = True,
 ) -> ProjectTestRunResponse:
     root = _resolve_project_root(repository_path)
     command = _detect_test_command(root, language)
@@ -72,7 +73,7 @@ async def run_project_tests(
     status = cast(TestStatus, "passed" if result.returncode == 0 else "failed")
     failed_cases = 0 if status == "passed" else _extract_failed_case_count(log_excerpt)
     explanation = None
-    if status == "failed":
+    if status == "failed" and explain_failures:
         explanation = await reviewer.explain_test_failure(command.display, log_excerpt)
 
     return ProjectTestRunResponse(

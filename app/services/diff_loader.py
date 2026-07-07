@@ -35,6 +35,15 @@ class ChangedFile:
 
 
 def load_repository_diff(repository_path: str, max_chars: int, base_branch: str = "main") -> str:
+    diff = load_repository_unified_diff(repository_path, base_branch)
+    files = parse_unified_diff(diff)
+    if not files:
+        raise HTTPException(status_code=400, detail="Git diff did not contain reviewable file changes")
+
+    return trim_code(format_diff_for_review(files), max_chars)
+
+
+def load_repository_unified_diff(repository_path: str, base_branch: str = "main") -> str:
     root = Path(repository_path).expanduser().resolve()
     if not root.exists():
         raise HTTPException(status_code=400, detail=f"Path does not exist: {repository_path}")
@@ -48,11 +57,7 @@ def load_repository_diff(repository_path: str, max_chars: int, base_branch: str 
     if not diff.strip():
         raise HTTPException(status_code=400, detail=f"No diff found for {normalized_base}...HEAD")
 
-    files = parse_unified_diff(diff)
-    if not files:
-        raise HTTPException(status_code=400, detail="Git diff did not contain reviewable file changes")
-
-    return trim_code(format_diff_for_review(files), max_chars)
+    return diff
 
 
 def parse_unified_diff(diff: str) -> list[ChangedFile]:

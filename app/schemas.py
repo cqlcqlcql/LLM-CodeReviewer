@@ -51,3 +51,21 @@ class TestRunResponse(BaseModel):
     failed_cases: int | None = None
     log_excerpt: str
     llm_explanation: str | None = None
+
+
+class DiffRequest(BaseModel):
+    repository_path: str = Field(description="Local Git repository path")
+    base_branch: str = Field(default="main", description="Git base branch used for repository diff reviews")
+
+
+class ChangedFileSummary(BaseModel):
+    path: str
+    additions: int
+    deletions: int
+    hunks: int
+
+
+class DiffResponse(BaseModel):
+    base_branch: str
+    diff: str
+    files: list[ChangedFileSummary]

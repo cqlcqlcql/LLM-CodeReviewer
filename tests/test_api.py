@@ -90,6 +90,34 @@ def test_review_repository_uses_context_after_added_function(tmp_path):
     assert data["issues"][0]["line"] == 4
 
 
+def test_repository_diff_returns_file_summary_and_unified_diff(tmp_path):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+
+    source = tmp_path / "calculator.py"
+    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    _git(tmp_path, "add", "calculator.py")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "checkout", "-b", "feature/review-me")
+
+    source.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    _git(tmp_path, "add", "calculator.py")
+    _git(tmp_path, "commit", "-m", "break add")
+
+    response = client.post(
+        "/api/diff",
+        json={"repository_path": str(tmp_path), "base_branch": "main"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["base_branch"] == "main"
+    assert data["files"] == [{"path": "calculator.py", "additions": 1, "deletions": 1, "hunks": 1}]
+    assert "+    return a - b" in data["diff"]
+    assert "-    return a + b" in data["diff"]
+
+
 def test_review_repository_rejects_invalid_base_branch(tmp_path):
     _git(tmp_path, "init", "-b", "main")
 
@@ -312,7 +340,7 @@ def test_review_non_git_repository_summarizes_test_failure_without_diff_text(tmp
     data = response.json()
     assert data["summary"] == (
         "Automated tests failed with 1 failing case(s). "
-        "pytest failed because one or more assertions did not match the expected behavior."
+        "pytest 失败：至少一个断言的实际结果和期望结果不一致。下一步：先查看第一个失败用例对应的函数实现。"
     )
     assert "diff" not in data["summary"].lower()
     assert "No review issues found" not in data["summary"]

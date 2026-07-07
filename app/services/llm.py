@@ -155,10 +155,10 @@ class MockReviewer(CodeReviewer):
 
     async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
         if "assert" in log_excerpt.lower():
-            return f"{command} failed because one or more assertions did not match the expected behavior."
+            return f"{command} 失败：至少一个断言的实际结果和期望结果不一致。下一步：先查看第一个失败用例对应的函数实现。"
         if "error" in log_excerpt.lower() or "exception" in log_excerpt.lower():
-            return f"{command} failed because the test run raised an error or exception."
-        return f"{command} failed. Review the captured log excerpt for the first failing case and traceback."
+            return f"{command} 失败：测试运行中出现错误或异常。下一步：先查看日志里的第一个 traceback。"
+        return f"{command} 失败。下一步：查看日志里的第一个失败用例和 traceback。"
 
 
 class DeepSeekReviewer(CodeReviewer):
@@ -214,9 +214,18 @@ Diff context:
 
     async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
         prompt = f"""
-You are helping explain a failed automated test run.
-Be concise and actionable. Mention the most likely cause and the next thing to inspect.
-Do not invent files or functions that are not visible in the log.
+你正在解释一次失败的自动化测试。
+请用中文输出，面向普通开发者，必须短、清楚、可执行。
+不要编造日志里没有出现的文件、函数或用例。
+
+输出格式固定如下：
+结论：一句话说明这次失败的核心原因。
+
+| 用例 | 可能原因 | 下一步 |
+| --- | --- | --- |
+| test_name | 不超过 30 个中文字 | 不超过 30 个中文字 |
+
+最多列出 5 个最重要的失败用例。不要输出 Markdown 表格以外的长段解释。
 
 Command:
 {command}
@@ -231,7 +240,7 @@ Test log:
             completion = await self.client.chat.completions.create(
                 model=self.settings.deepseek_model,
                 messages=[
-                    {"role": "system", "content": "You explain test failures concisely."},
+                    {"role": "system", "content": "你用简洁中文解释测试失败，并按固定表格输出。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,

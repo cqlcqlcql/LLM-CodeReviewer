@@ -7,15 +7,22 @@
     <style>
       :root {
         color-scheme: light;
-        --bg: #f6f7f9;
+        --bg: #f4f6f8;
         --panel: #ffffff;
-        --text: #172033;
-        --muted: #657085;
-        --border: #d9dee8;
-        --primary: #2457d6;
+        --text: #1f2937;
+        --muted: #667085;
+        --border: #d0d5dd;
+        --soft: #eef2f6;
+        --primary: #175cd3;
+        --primary-soft: #eaf1ff;
         --danger: #b42318;
+        --danger-soft: #fee4e2;
         --warning: #b54708;
-        --ok: #027a48;
+        --warning-soft: #fef0c7;
+        --success: #027a48;
+        --success-soft: #dcfae6;
+        --code-bg: #111827;
+        --code-line: #1f2937;
       }
 
       * {
@@ -26,361 +33,1145 @@
         margin: 0;
         background: var(--bg);
         color: var(--text);
+        overflow: hidden;
         font-family:
           Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
           sans-serif;
       }
 
-      main {
-        width: min(1120px, calc(100vw - 32px));
-        margin: 32px auto;
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
       }
 
-      header {
-        margin-bottom: 20px;
+      button {
+        border: 1px solid transparent;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.62;
+      }
+
+      .app {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        overflow: hidden;
+      }
+
+      .sidebar {
+        background: #111827;
+        color: #f9fafb;
+        padding: 20px 14px;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .brand {
+        padding: 0 8px 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .brand strong {
+        display: block;
+        font-size: 18px;
+      }
+
+      .brand span {
+        display: block;
+        margin-top: 4px;
+        color: #cbd5e1;
+        font-size: 12px;
+      }
+
+      .nav {
+        display: grid;
+        gap: 6px;
+        margin-top: 18px;
+      }
+
+      .nav button {
+        width: 100%;
+        padding: 10px 12px;
+        background: transparent;
+        color: #cbd5e1;
+        text-align: left;
+      }
+
+      .nav button.active {
+        background: #243043;
+        color: #ffffff;
+      }
+
+      .content {
+        min-width: 0;
+        min-height: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding: 24px;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        margin-bottom: 18px;
       }
 
       h1,
-      h2 {
+      h2,
+      h3,
+      p {
         margin: 0;
-        line-height: 1.2;
       }
 
       h1 {
-        font-size: 28px;
+        font-size: 24px;
       }
 
       h2 {
-        font-size: 20px;
+        font-size: 18px;
       }
 
-      p {
-        margin: 6px 0 0;
+      h3 {
+        font-size: 15px;
+      }
+
+      .subtitle {
+        margin-top: 5px;
         color: var(--muted);
       }
 
-      .workspace {
+      .status-strip,
+      .grid,
+      .result-grid,
+      .report-actions {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
-        gap: 20px;
-        align-items: start;
+        gap: 12px;
       }
 
-      section {
+      .status-strip {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 14px;
+      }
+
+      .metric,
+      .panel,
+      .issue-card,
+      .history-item {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 18px;
+      }
+
+      .metric {
+        padding: 12px;
+      }
+
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 20px;
+      }
+
+      .grid.two {
+        grid-template-columns: minmax(0, 1fr) 360px;
+        align-items: start;
+      }
+
+      .result-grid {
+        grid-template-columns: minmax(0, 1.25fr) minmax(360px, 0.75fr);
+        align-items: stretch;
+        min-height: 0;
+      }
+
+      .result-grid.no-diff {
+        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.55fr);
+      }
+
+      #review-panel {
+        order: 1;
+      }
+
+      #context-panel {
+        order: 2;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .section {
+        display: none;
+        min-height: 0;
+      }
+
+      .section.active {
+        flex: 1;
+        display: block;
+        overflow: auto;
+      }
+
+      #view-result.section.active {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+        overflow: hidden;
+        flex-direction: column;
+      }
+
+      #view-result .status-strip {
+        flex: 0 0 auto;
+      }
+
+      #view-result .result-grid {
+        flex: 1;
+        min-height: 0;
+      }
+
+      #view-result .panel {
+        height: 100%;
+        min-height: 0;
+        max-height: 100%;
+      }
+
+      #context-panel,
+      #review-panel {
+        overflow: auto;
       }
 
       label {
         display: block;
         margin: 14px 0 6px;
         color: #344054;
-        font-weight: 600;
+        font-weight: 700;
       }
 
-      select,
       input,
-      textarea,
-      button {
+      select,
+      textarea {
         width: 100%;
-        border-radius: 6px;
-        font: inherit;
-      }
-
-      select,
-      input,
-      textarea {
         border: 1px solid var(--border);
-        background: #fff;
+        border-radius: 6px;
+        background: #ffffff;
         padding: 10px 12px;
+        color: var(--text);
       }
 
       textarea {
-        min-height: 360px;
+        min-height: 140px;
         resize: vertical;
         font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
         line-height: 1.5;
       }
 
-      button {
-        margin-top: 16px;
-        border: 0;
-        background: var(--primary);
-        color: #fff;
-        padding: 11px 14px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.65;
-      }
-
-      .tabs {
+      .row {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 8px;
-        margin-bottom: 8px;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
       }
 
-      .tab {
-        border: 1px solid var(--border);
-        background: #fff;
-        color: var(--text);
-        margin: 0;
-      }
-
-      .tab.active {
-        background: #eaf0ff;
-        border-color: #a9bcf5;
-        color: #173b91;
-      }
-
-      .checkbox-row {
-        display: flex;
+      .checks {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 10px;
-        align-items: center;
         margin-top: 14px;
-        color: #344054;
-        font-weight: 600;
       }
 
-      .checkbox-row input {
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #f8fafc;
+        font-weight: 700;
+      }
+
+      .check input {
         width: 18px;
         height: 18px;
       }
 
-      .hidden {
-        display: none;
-      }
-
-      .summary {
-        margin: 12px 0 16px;
-        padding: 12px;
-        background: #f8fafc;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: #344054;
-      }
-
-      .notice {
-        margin-top: 10px;
-        padding: 10px 12px;
-        border: 1px solid #fedf89;
-        border-radius: 6px;
-        background: #fffaeb;
-        color: #93370d;
-      }
-
-      .issue,
-      .test-result {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 12px;
-        margin-top: 12px;
-      }
-
-      .issue-header {
+      .actions {
         display: flex;
-        gap: 8px;
-        align-items: center;
+        gap: 10px;
         flex-wrap: wrap;
-        margin-bottom: 8px;
+        margin-top: 16px;
+      }
+
+      .primary {
+        background: var(--primary);
+        color: #ffffff;
+        padding: 10px 14px;
+      }
+
+      .secondary {
+        background: #ffffff;
+        border-color: var(--border);
+        color: var(--text);
+        padding: 10px 14px;
+      }
+
+      .danger {
+        background: #ffffff;
+        border-color: #fecdca;
+        color: var(--danger);
+        padding: 10px 14px;
+      }
+
+      .progress-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 24px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--soft);
+      }
+
+      .step:last-child {
+        border-bottom: 0;
+      }
+
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #98a2b3;
+      }
+
+      .step.done .dot {
+        background: var(--success);
+      }
+
+      .step.running .dot {
+        background: var(--primary);
+      }
+
+      .step.failed .dot {
+        background: var(--danger);
       }
 
       .badge {
         display: inline-flex;
         align-items: center;
+        min-height: 24px;
         border-radius: 999px;
-        padding: 3px 8px;
-        font-size: 12px;
-        font-weight: 700;
-        background: #eef2f6;
+        padding: 2px 9px;
+        background: var(--soft);
         color: #344054;
+        font-size: 12px;
+        font-weight: 800;
       }
 
-      .high,
-      .failed,
-      .timeout,
-      .error {
-        background: #fee4e2;
+      .badge.high,
+      .badge.failed,
+      .badge.timeout,
+      .badge.error {
+        background: var(--danger-soft);
         color: var(--danger);
       }
 
-      .medium {
-        background: #fef0c7;
+      .badge.medium {
+        background: var(--warning-soft);
         color: var(--warning);
       }
 
-      .low,
-      .passed {
-        background: #dcfae6;
-        color: var(--ok);
+      .badge.low,
+      .badge.passed {
+        background: var(--success-soft);
+        color: var(--success);
       }
 
-      .unsupported {
-        background: #f2f4f7;
+      .badge.unsupported {
+        background: var(--soft);
         color: #475467;
       }
 
-      pre {
+      .file-list {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 12px 0;
+      }
+
+      .file-pill {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #ffffff;
+        padding: 5px 9px;
+        color: #344054;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .diff {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        max-height: none;
+        border-radius: 8px;
+        background: var(--code-bg);
+        color: #e5e7eb;
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .diff-line {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        min-width: 760px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      }
+
+      .diff-line span:first-child {
+        padding: 0 8px;
+        color: #9ca3af;
+        text-align: right;
+        user-select: none;
+      }
+
+      .diff-line code {
+        padding: 0 10px;
+        white-space: pre;
+      }
+
+      .diff-line.add {
+        background: rgba(2, 122, 72, 0.22);
+      }
+
+      .diff-line.del {
+        background: rgba(180, 35, 24, 0.22);
+      }
+
+      .diff-line.meta {
+        background: var(--code-line);
+        color: #bfdbfe;
+      }
+
+      .diff-summary {
+        display: grid;
+        gap: 10px;
+        overflow: auto;
+        min-height: 0;
+      }
+
+      .change-overview,
+      .change-file {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .change-overview {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .change-overview span,
+      .change-meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .change-overview strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 18px;
+      }
+
+      .change-file h3 {
+        overflow-wrap: anywhere;
+      }
+
+      .change-lines {
+        display: grid;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .change-line {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr);
+        gap: 8px;
+        border-radius: 6px;
+        padding: 7px 8px;
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .change-line.add {
+        background: #ecfdf3;
+        color: #075e45;
+      }
+
+      .change-line.del {
+        background: #fff1f0;
+        color: #8a1f17;
+      }
+
+      .change-line code {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
+      }
+
+      .issue-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .issue-card {
+        padding: 12px;
+        border-left: 4px solid var(--border);
+      }
+
+      .issue-card.high-priority {
+        border-left-color: var(--danger);
+      }
+
+      .issue-head {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+
+      .field {
+        margin-top: 8px;
+      }
+
+      .field p {
+        margin-top: 4px;
+        line-height: 1.45;
+      }
+
+      .field strong {
+        display: inline-block;
+        min-width: 48px;
+        color: #344054;
+      }
+
+      .evidence {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
         background: #101828;
         color: #f9fafb;
-        border-radius: 6px;
+        overflow: hidden;
+      }
+
+      .evidence-title {
+        padding: 7px 10px;
+        background: #1f2937;
+        color: #d0d5dd;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .evidence-line {
+        display: grid;
+        grid-template-columns: 46px minmax(0, 1fr);
+        gap: 8px;
+        padding: 3px 10px;
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .evidence-line span {
+        color: #98a2b3;
+        text-align: right;
+      }
+
+      .evidence-line code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .evidence-line.hit {
+        background: rgba(23, 92, 211, 0.25);
+      }
+
+      .empty {
+        padding: 18px;
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+        background: #f8fafc;
+      }
+
+      .analysis-panel {
+        margin-top: 14px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .analysis-panel h3 {
+        margin-bottom: 8px;
+      }
+
+      .analysis-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 10px 0 12px;
+      }
+
+      .analysis-stat {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 10px;
+      }
+
+      .analysis-stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .analysis-stat strong {
+        display: block;
+        margin-top: 4px;
+      }
+
+      .analysis-text {
+        max-height: 260px;
+        overflow: auto;
+        line-height: 1.5;
+      }
+
+      .analysis-text p,
+      .analysis-text li {
+        margin: 6px 0;
+      }
+
+      .analysis-text ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+
+      .diagnosis-summary {
+        margin: 10px 0 12px;
         padding: 12px;
-        margin: 16px 0 0;
+        border: 1px solid #fedf89;
+        border-radius: 8px;
+        background: #fffaeb;
+        color: #7a2e0e;
+        line-height: 1.45;
+      }
+
+      .diagnosis-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .diagnosis-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .diagnosis-item h4 {
+        margin: 0 0 8px;
+        font-size: 15px;
+        overflow-wrap: anywhere;
+      }
+
+      .diagnosis-fields {
+        display: grid;
+        gap: 8px;
+      }
+
+      .diagnosis-fields strong {
+        color: #344054;
+      }
+
+      .diagnosis-fields p {
+        margin: 3px 0 0;
+        line-height: 1.45;
+      }
+
+      .log {
+        margin-top: 12px;
+        max-height: 360px;
+        overflow: auto;
+        border-radius: 8px;
+        background: var(--code-bg);
+        color: #f9fafb;
+        padding: 12px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .report {
+        min-height: 420px;
+        font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      }
+
+      .history-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .history-item {
+        padding: 12px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .muted {
+        color: var(--muted);
       }
 
       .error-text {
         color: var(--danger);
-        font-weight: 600;
+        font-weight: 700;
       }
 
-      @media (max-width: 840px) {
-        .workspace {
+      @media (max-width: 980px) {
+        body {
+          overflow: auto;
+        }
+
+        .app {
+          min-height: 100vh;
+          height: auto;
           grid-template-columns: 1fr;
+          overflow: visible;
+        }
+
+        .sidebar {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          height: auto;
+          overflow: visible;
+        }
+
+        .content {
+          height: auto;
+          min-height: 0;
+          overflow: visible;
+        }
+
+        .nav {
+          grid-template-columns: repeat(3, 1fr);
+        }
+
+        .status-strip,
+        .grid.two,
+        .result-grid {
+          grid-template-columns: 1fr;
+        }
+
+        #view-result.section.active {
+          display: block;
+          overflow: visible;
+        }
+
+        #view-result .result-grid {
+          min-height: auto;
+        }
+
+        #view-result .panel {
+          height: auto;
+          max-height: none;
+        }
+
+        #context-panel,
+        #review-panel {
+          overflow: visible;
+        }
+
+        .diff,
+        .diff-summary {
+          max-height: 52vh;
+          flex: none;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .content {
+          padding: 16px;
+        }
+
+        .topbar,
+        .history-item,
+        .row,
+        .checks {
+          grid-template-columns: 1fr;
+          display: grid;
+        }
+
+        .nav {
+          grid-template-columns: repeat(2, 1fr);
         }
       }
     </style>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Code Review MVP</h1>
-        <p>AI 代码评审、Git diff 检查与自动化测试结果分析。</p>
-      </header>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <strong>Code Review MVP</strong>
+          <span>Diff review / tests / reports</span>
+        </div>
+        <nav class="nav" aria-label="页面导航">
+          <button class="active" type="button" data-view="create">首页</button>
+          <button type="button" data-view="task">任务页</button>
+          <button type="button" data-view="result">结果页</button>
+          <button type="button" data-view="test">测试页</button>
+          <button type="button" data-view="report">报告页</button>
+          <button type="button" data-view="history">历史页</button>
+        </nav>
+      </aside>
 
-      <div class="workspace">
-        <section>
-          <div class="tabs">
-            <button class="tab active" type="button" data-mode="code">粘贴代码</button>
-            <button class="tab" type="button" data-mode="file">上传文件</button>
-            <button class="tab" type="button" data-mode="repo">仓库路径</button>
+      <main class="content">
+        <div class="topbar">
+          <div>
+            <h1 id="page-title">创建评审任务</h1>
+            <p class="subtitle" id="page-subtitle">选择本地项目目录，运行 diff 评审、静态分析和测试。</p>
           </div>
+          <span class="badge" id="provider">后端未连接</span>
+        </div>
 
-          <label for="language">语言</label>
-          <select id="language">
-            <option value="python">Python</option>
-            <option value="javascript">JavaScript</option>
-            <option value="typescript">TypeScript</option>
-            <option value="c">C</option>
-            <option value="cpp">C++</option>
-            <option value="java">Java</option>
-          </select>
+        <section class="section active" id="view-create">
+          <div class="grid two">
+            <div class="panel">
+              <h2>任务配置</h2>
+              <div class="row">
+                <div>
+                  <label for="language">语言</label>
+                  <select id="language">
+                    <option value="python">Python</option>
+                    <option value="javascript">JavaScript</option>
+                    <option value="typescript">TypeScript</option>
+                    <option value="java">Java</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="base-branch">基础分支</label>
+                  <input id="base-branch" value="main" placeholder="main / master / develop" />
+                </div>
+              </div>
 
-          <div id="code-panel">
-            <label for="code">代码</label>
-            <textarea id="code">def add(a,b): return a-b</textarea>
+              <label for="repo">本地项目目录</label>
+              <input id="repo" placeholder="D:\profile\diff-test-project" />
+
+              <div class="checks">
+                <label class="check" for="run-static">
+                  <input id="run-static" type="checkbox" checked />
+                  静态分析
+                </label>
+                <label class="check" for="run-tests">
+                  <input id="run-tests" type="checkbox" checked />
+                  自动测试
+                </label>
+              </div>
+
+              <div class="actions">
+                <button class="primary" id="start-review" type="button">开始评审</button>
+                <button class="secondary" id="run-tests-only" type="button">只运行测试</button>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h2>当前能力</h2>
+              <p class="subtitle">当前后端仍以目录为入口：收集项目上下文和本地工具结果，最后交给 LLM 综合分析。</p>
+              <div class="status-strip" style="grid-template-columns: 1fr 1fr; margin-top: 14px">
+                <div class="metric">
+                  <span>输入</span>
+                  <strong>目录</strong>
+                </div>
+                <div class="metric">
+                  <span>分析</span>
+                  <strong>Diff</strong>
+                </div>
+                <div class="metric">
+                  <span>测试</span>
+                  <strong>pytest</strong>
+                </div>
+                <div class="metric">
+                  <span>报告</span>
+                  <strong>MD / PDF</strong>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div id="file-panel" class="hidden">
-            <label for="file">代码文件</label>
-            <input id="file" type="file" />
-          </div>
-
-          <div id="repo-panel" class="hidden">
-            <label for="repo">本地仓库路径</label>
-            <input id="repo" placeholder="D:\profile\code-reviewer-mvp" />
-
-            <label for="base-branch">基础分支</label>
-            <input id="base-branch" value="main" placeholder="main / master / develop" />
-
-            <label class="checkbox-row" for="run-static-analysis">
-              <input id="run-static-analysis" type="checkbox" checked />
-              运行静态分析
-            </label>
-
-            <label class="checkbox-row" for="run-tests">
-              <input id="run-tests" type="checkbox" />
-              运行自动化测试
-            </label>
-          </div>
-
-          <button id="review" type="button">开始评审</button>
         </section>
 
-        <section>
-          <h2>评审结果</h2>
-          <div id="result" class="summary">等待提交代码。</div>
-          <pre id="raw" class="hidden"></pre>
+        <section class="section" id="view-task">
+          <div class="panel">
+            <h2>运行进度</h2>
+            <div class="progress-list" id="progress-list"></div>
+          </div>
         </section>
-      </div>
-    </main>
+
+        <section class="section" id="view-result">
+          <div class="status-strip">
+            <div class="metric"><span>总体评分</span><strong id="score">-</strong></div>
+            <div class="metric"><span>问题数量</span><strong id="issue-count">0</strong></div>
+            <div class="metric"><span>测试状态</span><strong id="test-status">未运行</strong></div>
+            <div class="metric"><span>评审来源</span><strong id="source-count">-</strong></div>
+          </div>
+
+          <div class="result-grid" id="result-grid">
+            <div class="panel" id="context-panel">
+              <h2 id="context-title">代码 diff</h2>
+              <div class="file-list" id="file-list"></div>
+              <div class="diff-summary" id="diff-view"></div>
+            </div>
+
+            <div class="panel" id="review-panel">
+              <h2>评审意见</h2>
+              <p class="subtitle" id="summary">尚未运行评审。</p>
+              <div class="issue-list" id="issue-list"></div>
+              <div id="result-analysis"></div>
+              <div class="actions">
+                <button class="primary" id="export-from-result" type="button">导出报告</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="view-test">
+          <div class="panel">
+            <h2>测试结果</h2>
+            <div id="test-panel" class="empty">尚未运行测试。</div>
+          </div>
+        </section>
+
+        <section class="section" id="view-report">
+          <div class="panel">
+            <h2>报告</h2>
+            <p class="subtitle">Markdown 可直接下载；PDF 使用浏览器打印为 PDF。</p>
+            <textarea class="report" id="report-text" spellcheck="false"></textarea>
+            <div class="actions">
+              <button class="primary" id="download-md" type="button">下载 Markdown</button>
+              <button class="secondary" id="print-pdf" type="button">生成 PDF</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="view-history">
+          <div class="panel">
+            <div class="topbar" style="margin-bottom: 12px">
+              <div>
+                <h2>历史记录</h2>
+                <p class="subtitle">保存在当前浏览器本地。</p>
+              </div>
+              <button class="danger" id="clear-history" type="button">清空历史</button>
+            </div>
+            <div class="history-list" id="history-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <script>
-      const tabs = document.querySelectorAll(".tab");
-      const panels = {
-        code: document.querySelector("#code-panel"),
-        file: document.querySelector("#file-panel"),
-        repo: document.querySelector("#repo-panel"),
+      const state = {
+        currentView: "create",
+        review: null,
+        diff: null,
+        diffNotice: "",
+        test: null,
+        task: null,
+        history: loadHistory(),
       };
-      const button = document.querySelector("#review");
-      const result = document.querySelector("#result");
-      const raw = document.querySelector("#raw");
-      let mode = "code";
 
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-          mode = tab.dataset.mode;
-          tabs.forEach((item) => item.classList.toggle("active", item === tab));
-          Object.entries(panels).forEach(([name, panel]) => {
-            panel.classList.toggle("hidden", name !== mode);
-          });
-        });
+      const views = {
+        create: ["创建评审任务", "选择本地项目目录，运行 diff 评审、静态分析和测试。"],
+        task: ["运行进度", "查看 diff、工具、LLM 和测试的执行状态。"],
+        result: ["评审结果", "左侧对照代码 diff，右侧查看结构化问题卡片。"],
+        test: ["测试页", "查看测试命令、通过或失败状态，以及日志摘要。"],
+        report: ["报告页", "生成 Markdown 报告，或通过浏览器打印为 PDF。"],
+        history: ["历史页", "查看过去评审任务的摘要。"],
+      };
+
+      const $ = (selector) => document.querySelector(selector);
+      const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+      $$(".nav button").forEach((button) => {
+        button.addEventListener("click", () => setView(button.dataset.view));
       });
+      $("#start-review").addEventListener("click", runReview);
+      $("#run-tests-only").addEventListener("click", runTestsOnly);
+      $("#export-from-result").addEventListener("click", () => setView("report"));
+      $("#download-md").addEventListener("click", downloadMarkdown);
+      $("#print-pdf").addEventListener("click", printReport);
+      $("#clear-history").addEventListener("click", clearHistory);
 
-      button.addEventListener("click", async () => {
-        button.disabled = true;
-        result.className = "summary";
-        result.textContent = "评审中...";
-        raw.classList.add("hidden");
+      init();
+
+      async function init() {
+        renderAll();
+        try {
+          const health = await readJson(await fetch("/api/health"));
+          $("#provider").textContent = `后端在线 / ${health.provider}`;
+          $("#provider").className = "badge passed";
+        } catch {
+          $("#provider").textContent = "后端未连接";
+          $("#provider").className = "badge failed";
+        }
+      }
+
+      function getConfig() {
+        const repositoryPath = $("#repo").value.trim();
+        if (!repositoryPath) throw new Error("请填写本地项目目录。");
+        return {
+          language: $("#language").value,
+          repository_path: repositoryPath,
+          base_branch: $("#base-branch").value.trim() || "main",
+          run_static_analysis: $("#run-static").checked,
+          run_tests: $("#run-tests").checked,
+        };
+      }
+
+      async function runReview() {
+        let config;
+        try {
+          config = getConfig();
+        } catch (error) {
+          showError(error.message);
+          return;
+        }
+
+        state.review = null;
+        state.diff = null;
+        state.diffNotice = "";
+        state.test = null;
+        state.task = createTask(config, config.run_tests);
+        setView("task");
+        renderAll();
+        setBusy(true);
 
         try {
-          const data = await submitReview();
-          renderResult(data);
+          markStep("diff", "running");
+          state.diff = await requestDiff(config);
+          markStep("diff", "done");
         } catch (error) {
-          result.className = "summary error-text";
-          result.textContent = error.message;
+          if (isSkippableDiffError(error.message)) {
+            state.diffNotice = toDiffSkipMessage(error.message, config.base_branch);
+            markStep("diff", "skipped", state.diffNotice);
+          } else {
+            markStep("diff", "failed", error.message);
+          }
+        }
+
+        try {
+          markStep("static", config.run_static_analysis ? "running" : "skipped");
+          markStep("test", config.run_tests ? "running" : "skipped");
+          markStep("review", "running");
+          state.review = await requestReview(config);
+          state.test = state.review.test_result || null;
+          markStep("static", config.run_static_analysis ? "done" : "skipped");
+          markStep("test", config.run_tests ? "done" : "skipped");
+          markStep("review", "done");
+          saveRun(config);
+          setView("result");
+        } catch (error) {
+          markStep("review", "failed", error.message);
+          showError(error.message);
         } finally {
-          button.disabled = false;
+          setBusy(false);
+          renderAll();
         }
-      });
+      }
 
-      async function submitReview() {
-        const language = document.querySelector("#language").value;
-
-        if (mode === "file") {
-          const file = document.querySelector("#file").files[0];
-          if (!file) throw new Error("请选择一个代码文件。");
-          const form = new FormData();
-          form.append("language", language);
-          form.append("file", file);
-          const response = await fetch("/api/review/file", { method: "POST", body: form });
-          return readJson(response);
+      async function runTestsOnly() {
+        let config;
+        try {
+          config = getConfig();
+        } catch (error) {
+          showError(error.message);
+          return;
         }
 
-        const payload =
-          mode === "repo"
-            ? {
-                language,
-                repository_path: document.querySelector("#repo").value.trim(),
-                base_branch: document.querySelector("#base-branch").value.trim() || "main",
-                run_tests: document.querySelector("#run-tests").checked,
-                run_static_analysis: document.querySelector("#run-static-analysis").checked,
-              }
-            : { language, code: document.querySelector("#code").value };
+        state.test = null;
+        state.task = createTask(config, true);
+        setView("task");
+        setBusy(true);
+        markStep("test", "running");
+        renderAll();
+        try {
+          state.test = await requestTests(config);
+          markStep("test", "done");
+          setView("test");
+        } catch (error) {
+          markStep("test", "failed", error.message);
+          showError(error.message);
+        } finally {
+          setBusy(false);
+          renderAll();
+        }
+      }
 
-        const response = await fetch("/api/review", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        return readJson(response);
+      async function requestReview(config) {
+        return readJson(
+          await fetch("/api/review", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(config),
+          }),
+        );
+      }
+
+      async function requestDiff(config) {
+        return readJson(
+          await fetch("/api/diff", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repository_path: config.repository_path,
+              base_branch: config.base_branch,
+            }),
+          }),
+        );
+      }
+
+      async function requestTests(config) {
+        return readJson(
+          await fetch("/api/test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repository_path: config.repository_path,
+              language: config.language,
+              timeout_seconds: 60,
+            }),
+          }),
+        );
       }
 
       async function readJson(response) {
@@ -404,65 +1195,703 @@
         return data;
       }
 
-      function renderResult(data) {
-        const issues = data.issues || [];
-        const notices = data.notices || [];
-        result.className = "summary";
-        result.innerHTML = `<strong>总结：</strong>${escapeHtml(data.summary)}<br><strong>问题数：</strong>${issues.length}`;
-
-        for (const notice of notices) {
-          const node = document.createElement("div");
-          node.className = "notice";
-          node.textContent = notice;
-          result.appendChild(node);
-        }
-
-        for (const issue of issues) {
-          const node = document.createElement("div");
-          node.className = "issue";
-          node.innerHTML = `
-            <div class="issue-header">
-              <span class="badge ${issue.severity}">${escapeHtml(issue.severity)}</span>
-              <span class="badge">${escapeHtml(issue.source ?? "LLM")}</span>
-              <span class="badge">${escapeHtml(issue.category)}</span>
-              <span class="badge">${escapeHtml(issue.file_path ?? "pasted code")}</span>
-              <span class="badge">line ${issue.line ?? "?"}</span>
-            </div>
-            <div><strong>问题：</strong>${escapeHtml(issue.message)}</div>
-            <div><strong>建议：</strong>${escapeHtml(issue.suggestion)}</div>
-          `;
-          result.appendChild(node);
-        }
-
-        if (data.test_result) {
-          result.appendChild(renderTestResult(data.test_result));
-        }
-
-        raw.textContent = JSON.stringify(data, null, 2);
-        raw.classList.remove("hidden");
+      function createTask(config, includeTests) {
+        const steps = [
+          { id: "diff", label: "准备 diff 上下文", status: "pending", detail: `${config.base_branch}...HEAD` },
+          {
+            id: "static",
+            label: "静态分析",
+            status: config.run_static_analysis ? "pending" : "skipped",
+            detail: config.run_static_analysis ? "ruff / mypy / bandit / npm" : "未启用",
+          },
+          {
+            id: "test",
+            label: "自动测试",
+            status: includeTests ? "pending" : "skipped",
+            detail: includeTests ? "自动检测测试命令" : "未启用",
+          },
+          { id: "review", label: "LLM 综合分析", status: "pending", detail: "最后汇总 diff、工具和测试结果" },
+        ];
+        return { config, steps };
       }
 
-      function renderTestResult(test) {
-        const node = document.createElement("div");
-        node.className = "test-result";
-        node.innerHTML = `
-          <div class="issue-header">
-            <span class="badge ${test.test_status}">${escapeHtml(test.test_status)}</span>
-            <span class="badge">${escapeHtml(test.command ?? "no command")}</span>
-            <span class="badge">failed ${test.failed_cases ?? "?"}</span>
+      function markStep(id, status, detail) {
+        if (!state.task) return;
+        const step = state.task.steps.find((item) => item.id === id);
+        if (!step) return;
+        step.status = status;
+        if (detail) step.detail = detail;
+        renderProgress();
+      }
+
+      function renderAll() {
+        renderProgress();
+        renderResult();
+        renderTest();
+        renderReport();
+        renderHistory();
+      }
+
+      function renderProgress() {
+        const list = $("#progress-list");
+        const steps = state.task?.steps || [];
+        if (!steps.length) {
+          list.innerHTML = '<div class="empty">还没有运行任务。</div>';
+          return;
+        }
+        list.innerHTML = steps
+          .map(
+            (step) => `
+              <div class="step ${step.status}">
+                <span class="dot"></span>
+                <div>
+                  <strong>${escapeHtml(step.label)}</strong>
+                  <div class="muted">${escapeHtml(step.detail)}</div>
+                </div>
+                <span class="badge ${step.status}">${labelStatus(step.status)}</span>
+              </div>
+            `,
+          )
+          .join("");
+      }
+
+      function renderResult() {
+        const review = state.review;
+        const issues = review?.issues || [];
+        const displayedIssues = enrichIssues([...issues, ...testFindings()]);
+        const hasDiff = Boolean(state.diff?.diff);
+        $("#result-grid").classList.toggle("no-diff", !hasDiff);
+        $("#context-title").textContent = hasDiff ? "变更摘要" : "项目上下文";
+        $("#summary").textContent = displaySummary(review, displayedIssues);
+        $("#issue-count").textContent = String(displayedIssues.length);
+        $("#score").textContent = scoreReview(displayedIssues, state.test);
+        $("#test-status").textContent = state.test ? labelStatus(state.test.test_status) : "未运行";
+        $("#source-count").textContent = summarizeSources(displayedIssues);
+
+        const fileList = $("#file-list");
+        const files = state.diff?.files || [];
+        fileList.innerHTML = files.length
+          ? files
+              .map(
+                (file) =>
+                  `<span class="file-pill">${escapeHtml(file.path)} +${file.additions} -${file.deletions}</span>`,
+              )
+              .join("")
+          : `<span class="muted">${escapeHtml(state.diffNotice || "没有可显示的 diff。请查看静态分析和测试结果。")}</span>`;
+
+        $("#diff-view").innerHTML = state.diff?.diff
+          ? renderDiffSummary(state.diff)
+          : `<div class="empty">${escapeHtml(state.diffNotice || "本次没有 diff 上下文。")}</div>`;
+
+        const issueList = $("#issue-list");
+        if (!displayedIssues.length) {
+          issueList.innerHTML = '<div class="empty">没有评审问题。</div>';
+        } else {
+          issueList.innerHTML = displayedIssues.map(renderIssue).join("");
+        }
+        $("#result-analysis").innerHTML = "";
+      }
+
+      function renderIssue(issue) {
+        const location = issue.location_label || `${issue.file_path || "代码片段"}:${issue.line || "?"}`;
+        return `
+          <article class="issue-card ${issue.severity === "high" ? "high-priority" : ""}">
+            <div class="issue-head">
+              <span class="badge ${issue.severity}">${formatSeverity(issue.severity)}</span>
+              <span class="badge">${escapeHtml(formatCategory(issue.category))}</span>
+              <span class="badge">${escapeHtml(location)}</span>
+            </div>
+            <div class="field"><strong>问题</strong><p>${escapeHtml(issue.message)}</p></div>
+            <div class="field"><strong>来源</strong><p>${escapeHtml(issue.source || "LLM")}</p></div>
+            ${renderEvidence(issue)}
+          </article>
+        `;
+      }
+
+      function enrichIssues(issues) {
+        return issues.map((issue) => {
+          if (issue.evidence) return issue;
+          const evidence = findDiffEvidence(issue);
+          return evidence ? { ...issue, evidence_label: "代码切片", evidence } : issue;
+        });
+      }
+
+      function renderEvidence(issue) {
+        if (!issue.evidence?.length) return "";
+        return `
+          <div class="evidence">
+            <div class="evidence-title">${escapeHtml(issue.evidence_label || "证据切片")}</div>
+            ${issue.evidence.map(renderEvidenceLine).join("")}
+          </div>
+        `;
+      }
+
+      function renderEvidenceLine(line) {
+        const lineNo = line.line == null ? "" : String(line.line);
+        return `
+          <div class="evidence-line ${line.hit ? "hit" : ""}">
+            <span>${escapeHtml(lineNo)}</span>
+            <code>${escapeHtml(line.text)}</code>
+          </div>
+        `;
+      }
+
+      function findDiffEvidence(issue) {
+        if (!state.diff?.diff || !issue.file_path) return [];
+        const files = parseUnifiedDiff(state.diff.diff);
+        const file = files.find((item) => item.path === issue.file_path);
+        if (!file) return [];
+        const targetLine = issue.line || file.lines.find((line) => line.kind === "+")?.newLine;
+        if (!targetLine) return [];
+        const addedLines = file.lines.filter((line) => line.kind === "+");
+        const targetIndex = addedLines.findIndex((line) => line.newLine === targetLine);
+        const start = Math.max(0, targetIndex - 2);
+        const slice = addedLines.slice(start, start + 5);
+        return slice.map((line) => ({
+          line: line.newLine,
+          text: line.content || "(空行)",
+          hit: line.newLine === targetLine,
+        }));
+      }
+
+      function findLogEvidence(anchor) {
+        const lines = String(state.test?.log_excerpt || "").split("\n");
+        if (!lines.length) return [];
+        const needle = String(anchor || "").trim().toLowerCase();
+        let index = needle
+          ? lines.findIndex((line) => line.toLowerCase().includes(needle))
+          : -1;
+        if (index < 0) index = lines.findIndex((line) => /assert|failed|error/i.test(line));
+        if (index < 0) index = 0;
+        const start = Math.max(0, index - 2);
+        return lines.slice(start, start + 6).map((line, offset) => ({
+          line: start + offset + 1,
+          text: line || "(空行)",
+          hit: start + offset === index,
+        }));
+      }
+
+      function displaySummary(review, displayedIssues) {
+        if (!review) return "尚未运行评审。";
+        if (state.test?.test_status === "failed") {
+          const failedCases = state.test.failed_cases ?? "若干";
+          return `自动化测试失败，${failedCases} 个用例未通过。问题已按失败点拆分，并附带对应证据切片。`;
+        }
+        if (displayedIssues.length > 0) {
+          return `发现 ${displayedIssues.length} 个需要处理的问题。`;
+        }
+        return "本次没有发现明确评审问题。";
+      }
+
+      function testFindings() {
+        if (!state.test || state.test.test_status !== "failed") return [];
+        const diagnosis = parseTestDiagnosis(state.test.llm_explanation || "", state.test.failed_cases);
+        if (diagnosis.items.length) {
+          return diagnosis.items.map((item, index) => ({
+            severity: "high",
+            category: "test_failure",
+            location_label: item.name || `失败点 ${index + 1}`,
+            message: item.cause || "自动化测试失败，实际结果和期望结果不一致。",
+            suggestion: item.next || "",
+            source: "pytest + LLM",
+            evidence_label: "日志切片",
+            evidence: findLogEvidence(item.name || item.cause),
+          }));
+        }
+
+        const failedCases = state.test.failed_cases ?? "若干";
+        return [{
+          severity: "high",
+          category: "test_failure",
+          location_label: state.test.command || "测试命令",
+          message: `自动化测试失败，失败用例数：${failedCases}。`,
+          suggestion: "",
+          source: "pytest",
+          evidence_label: "日志切片",
+          evidence: findLogEvidence("assert"),
+        }];
+      }
+
+      function renderResultAnalysis() {
+        if (!state.test) return "";
+        const diagnosis = parseTestDiagnosis(state.test.llm_explanation || "", state.test.failed_cases);
+        return `
+          <section class="analysis-panel">
+            <h3>测试诊断</h3>
+            <div class="analysis-grid">
+              <div class="analysis-stat"><span>命令</span><strong>${escapeHtml(state.test.command || "无")}</strong></div>
+              <div class="analysis-stat"><span>状态</span><strong>${escapeHtml(labelStatus(state.test.test_status))}</strong></div>
+              <div class="analysis-stat"><span>失败用例</span><strong>${escapeHtml(state.test.failed_cases ?? "-")}</strong></div>
+            </div>
+            ${renderDiagnosis(diagnosis)}
+          </section>
+        `;
+      }
+
+      function renderDiagnosis(diagnosis) {
+        if (!diagnosis.summary && !diagnosis.items.length) {
+          return '<p class="muted">本次测试没有额外 LLM 分析。</p>';
+        }
+        const summary = diagnosis.summary
+          ? `<div class="diagnosis-summary">${escapeHtml(diagnosis.summary)}</div>`
+          : "";
+        const items = diagnosis.items.length
+          ? `<div class="diagnosis-list">${diagnosis.items.map(renderDiagnosisItem).join("")}</div>`
+          : "";
+        return `${summary}${items}`;
+      }
+
+      function renderDiagnosisItem(item, index) {
+        return `
+          <article class="diagnosis-item">
+            <h4>${escapeHtml(item.name || `失败点 ${index + 1}`)}</h4>
+            <div class="diagnosis-fields">
+              <div><strong>可能原因</strong><p>${escapeHtml(item.cause || "需要结合日志确认。")}</p></div>
+              <div><strong>下一步</strong><p>${escapeHtml(item.next || "先定位该用例对应的实现，再核对实际输出和期望输出。")}</p></div>
+            </div>
+          </article>
+        `;
+      }
+
+      function parseTestDiagnosis(value, failedCases) {
+        const cleaned = String(value)
+          .replaceAll("**", "")
+          .replaceAll("`", "")
+          .replace(/\r\n/g, "\n")
+          .trim();
+        if (!cleaned) return { summary: "", items: [] };
+
+        const table = parseDiagnosisTable(cleaned);
+        if (table.items.length) {
+          return {
+            summary: toChineseDiagnosisSummary(table.summary, failedCases),
+            items: table.items,
+          };
+        }
+
+        const numbered = parseNumberedDiagnosis(cleaned);
+        if (numbered.items.length) {
+          return {
+            summary: toChineseDiagnosisSummary(numbered.summary, failedCases),
+            items: numbered.items,
+          };
+        }
+
+        return parseSentenceDiagnosis(cleaned, failedCases);
+      }
+
+      function parseDiagnosisTable(text) {
+        const rows = text
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("|") && line.endsWith("|"))
+          .map((line) => line.slice(1, -1).split("|").map((cell) => cell.trim()))
+          .filter((cells) => cells.length >= 3);
+        const dataRows = rows.filter((cells) => !cells.every((cell) => /^-+$/.test(cell.replace(/\s/g, ""))));
+        if (dataRows.length < 2) return { summary: text, items: [] };
+        const items = dataRows.slice(1).map((cells) => ({
+          name: cells[0],
+          cause: cells[1],
+          next: cells[2],
+        }));
+        const summary = text.split("\n").find((line) => line.trim() && !line.trim().startsWith("|")) || "";
+        return { summary, items };
+      }
+
+      function parseNumberedDiagnosis(text) {
+        const normalized = text.replace(/\s+/g, " ").trim();
+        const parts = normalized
+          .split(/(?=\b\d+\.\s+[A-Za-z_][A-Za-z0-9_]*\s+-\s+Cause:)/)
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (parts.length <= 1) return { summary: text, items: [] };
+
+        const summary = parts[0].replace(/\|\s*Test\s*\|[\s\S]*$/i, "").trim();
+        const items = parts.slice(1).map((part) => {
+          const match = part.match(/^\d+\.\s+(.+?)\s+-\s+Cause:\s*(.+?)(?:\s+-\s+Inspect:\s*(.+))?$/i);
+          if (!match) return { name: "", cause: part, next: "" };
+          return {
+            name: match[1],
+            cause: match[2],
+            next: match[3] || "",
+          };
+        });
+        return { summary, items };
+      }
+
+      function parseSentenceDiagnosis(text, failedCases) {
+        const normalized = text.replace(/\s+/g, " ").trim();
+        const testName = extractFirstMatch(normalized, /\btest_[A-Za-z0-9_]+\b/) || "首个失败用例";
+        const cause = extractAfter(normalized, /Most likely cause:\s*/i, /Next step:\s*/i) || normalized;
+        const next = extractAfter(normalized, /Next step:\s*/i) || "查看失败用例对应的函数实现，核对实际输出和期望输出。";
+        return {
+          summary: toChineseDiagnosisSummary(normalized, failedCases),
+          items: [{ name: testName, cause, next }],
+        };
+      }
+
+      function toChineseDiagnosisSummary(text, failedCases) {
+        const count = failedCases ?? extractFailedCount(text);
+        if (count && Number(count) > 1) {
+          return `测试集中有 ${count} 个失败点，优先按下面的用例逐个定位；多数问题属于实现逻辑与期望不一致。`;
+        }
+        if (count === 1 || count === "1") {
+          return "测试集中有 1 个失败点，优先定位该用例对应的实现逻辑。";
+        }
+        return "测试失败，优先从第一个失败用例开始定位实际输出和期望输出的差异。";
+      }
+
+      function extractFailedCount(text) {
+        const match = String(text).match(/\b(\d+)\s+(?:logic errors|failed|failures|failing)/i);
+        return match ? Number(match[1]) : null;
+      }
+
+      function extractFirstMatch(text, pattern) {
+        const match = String(text).match(pattern);
+        return match ? match[0] : "";
+      }
+
+      function extractAfter(text, startPattern, endPattern) {
+        const start = String(text).search(startPattern);
+        if (start < 0) return "";
+        const afterStart = String(text).slice(start).replace(startPattern, "");
+        if (!endPattern) return afterStart.trim();
+        const end = afterStart.search(endPattern);
+        return (end >= 0 ? afterStart.slice(0, end) : afterStart).trim();
+      }
+
+      function renderDiff(diff) {
+        return diff
+          .split("\n")
+          .map((line, index) => {
+            const cls = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "del" : line.startsWith("@@") || line.startsWith("diff ") || line.startsWith("---") || line.startsWith("+++") ? "meta" : "";
+            return `<div class="diff-line ${cls}"><span>${index + 1}</span><code>${escapeHtml(line || " ")}</code></div>`;
+          })
+          .join("");
+      }
+
+      function renderDiffSummary(diffData) {
+        const files = parseUnifiedDiff(diffData.diff);
+        const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
+        const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+        const fileCount = files.length || diffData.files?.length || 0;
+        const overview = `
+          <div class="change-overview">
+            <div><span>文件</span><strong>${fileCount}</strong></div>
+            <div><span>新增</span><strong>+${totalAdditions}</strong></div>
+            <div><span>删除</span><strong>-${totalDeletions}</strong></div>
+          </div>
+        `;
+        if (!files.length) return `${overview}<div class="empty">没有可解析的变更块。</div>`;
+        return `${overview}${files.map(renderDiffFileSummary).join("")}`;
+      }
+
+      function renderDiffFileSummary(file) {
+        const changedLines = file.lines.filter((line) => line.kind === "+" || line.kind === "-");
+        const preview = changedLines.slice(0, 10);
+        const hidden = Math.max(0, changedLines.length - preview.length);
+        return `
+          <article class="change-file">
+            <h3>${escapeHtml(file.path)}</h3>
+            <div class="change-meta">新增 ${file.additions} 行 / 删除 ${file.deletions} 行 / ${file.hunks} 个变更块</div>
+            <div class="change-lines">
+              ${
+                preview.length
+                  ? preview.map(renderChangedLine).join("")
+                  : '<div class="muted">这个文件没有可展示的增删行。</div>'
+              }
+            </div>
+            ${hidden ? `<div class="change-meta">另有 ${hidden} 行变更未在摘要中展开。</div>` : ""}
+          </article>
+        `;
+      }
+
+      function renderChangedLine(line) {
+        const label = line.kind === "+" ? `+${line.newLine ?? ""}` : `-${line.oldLine ?? ""}`;
+        const prefix = line.kind === "+" ? "新增" : "删除";
+        return `
+          <div class="change-line ${line.kind === "+" ? "add" : "del"}">
+            <span>${escapeHtml(label)}</span>
+            <code>${escapeHtml(`${prefix}: ${line.content || "(空行)"}`)}</code>
+          </div>
+        `;
+      }
+
+      function parseUnifiedDiff(diff) {
+        const files = [];
+        let current = null;
+        let oldLine = 0;
+        let newLine = 0;
+
+        for (const rawLine of String(diff || "").split("\n")) {
+          if (rawLine.startsWith("diff --git ")) {
+            current = null;
+            continue;
+          }
+
+          if (rawLine.startsWith("+++ ")) {
+            let path = rawLine.slice(4).trim();
+            if (path === "/dev/null") {
+              current = null;
+              continue;
+            }
+            if (path.startsWith("b/")) path = path.slice(2);
+            current = { path, additions: 0, deletions: 0, hunks: 0, lines: [] };
+            files.push(current);
+            continue;
+          }
+
+          if (!current) continue;
+
+          if (rawLine.startsWith("@@ ")) {
+            const match = rawLine.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (match) {
+              oldLine = Number(match[1]);
+              newLine = Number(match[2]);
+              current.hunks += 1;
+            }
+            continue;
+          }
+
+          if (rawLine.startsWith("+") && !rawLine.startsWith("+++")) {
+            current.additions += 1;
+            current.lines.push({ kind: "+", oldLine: null, newLine, content: rawLine.slice(1) });
+            newLine += 1;
+          } else if (rawLine.startsWith("-") && !rawLine.startsWith("---")) {
+            current.deletions += 1;
+            current.lines.push({ kind: "-", oldLine, newLine: null, content: rawLine.slice(1) });
+            oldLine += 1;
+          } else if (rawLine.startsWith(" ")) {
+            oldLine += 1;
+            newLine += 1;
+          }
+        }
+
+        return files.filter((file) => file.hunks > 0);
+      }
+
+      function renderTest() {
+        const test = state.test;
+        if (!test) {
+          $("#test-panel").className = "empty";
+          $("#test-panel").textContent = "尚未运行测试。";
+          return;
+        }
+        $("#test-panel").className = "";
+        $("#test-panel").innerHTML = `
+          <div class="issue-head">
+            <span class="badge ${test.test_status}">${labelStatus(test.test_status)}</span>
+            <span class="badge">${escapeHtml(test.command || "无测试命令")}</span>
+            <span class="badge">失败用例 ${test.failed_cases ?? "-"}</span>
           </div>
           ${
             test.llm_explanation
-              ? `<div><strong>测试分析：</strong>${escapeHtml(test.llm_explanation)}</div>`
+              ? `<div class="analysis-panel"><h3>测试分析</h3>${renderDiagnosis(parseTestDiagnosis(test.llm_explanation, test.failed_cases))}</div>`
               : ""
           }
-          <pre>${escapeHtml(test.log_excerpt || "")}</pre>
+          <pre class="log">${escapeHtml(test.log_excerpt || "")}</pre>
         `;
-        return node;
+      }
+
+      function renderReport() {
+        $("#report-text").value = buildReport();
+      }
+
+      function renderHistory() {
+        const list = $("#history-list");
+        if (!state.history.length) {
+          list.innerHTML = '<div class="empty">还没有历史记录。</div>';
+          return;
+        }
+        list.innerHTML = state.history
+          .map(
+            (item, index) => `
+              <div class="history-item">
+                <div>
+                  <strong>${escapeHtml(item.repository_path)}</strong>
+                  <div class="muted">${escapeHtml(item.created_at)} / ${item.issue_count} 个问题 / 测试 ${escapeHtml(item.test_status)}</div>
+                </div>
+                <button class="secondary" type="button" data-history="${index}">载入摘要</button>
+              </div>
+            `,
+          )
+          .join("");
+
+        $$("[data-history]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const item = state.history[Number(button.dataset.history)];
+            state.review = item.review;
+            state.diff = item.diff;
+            state.diffNotice = item.diffNotice || "";
+            state.test = item.test;
+            renderAll();
+            setView("result");
+          });
+        });
+      }
+
+      function saveRun(config) {
+        state.history.unshift({
+          created_at: new Date().toLocaleString(),
+          repository_path: config.repository_path,
+          issue_count: state.review?.issues?.length || 0,
+          test_status: state.test?.test_status || "未运行",
+          review: state.review,
+          diff: state.diff,
+          diffNotice: state.diffNotice,
+          test: state.test,
+        });
+        state.history = state.history.slice(0, 12);
+        localStorage.setItem("code-review-history", JSON.stringify(state.history));
+      }
+
+      function loadHistory() {
+        try {
+          return JSON.parse(localStorage.getItem("code-review-history") || "[]");
+        } catch {
+          return [];
+        }
+      }
+
+      function clearHistory() {
+        state.history = [];
+        localStorage.removeItem("code-review-history");
+        renderHistory();
+      }
+
+      function buildReport() {
+        const review = state.review;
+        const issues = [...(review?.issues || []), ...testFindings()];
+        const lines = [
+          "# Code Review Report",
+          "",
+          `- Generated: ${new Date().toLocaleString()}`,
+          `- Summary: ${review?.summary || "No review has been run."}`,
+          `- Score: ${scoreReview(issues, state.test)}`,
+          `- Issues: ${issues.length}`,
+          `- Test status: ${state.test ? labelStatus(state.test.test_status) : "未运行"}`,
+          "",
+          "## Issues",
+          "",
+        ];
+
+        if (!issues.length) {
+          lines.push("No issues found.", "");
+        } else {
+          issues.forEach((issue, index) => {
+            lines.push(
+              `### ${index + 1}. ${formatSeverity(issue.severity)} / ${formatCategory(issue.category)}`,
+              "",
+              `- Location: ${issue.location_label || `${issue.file_path || "pasted code"}:${issue.line || "?"}`}`,
+              `- Source: ${issue.source || "LLM"}`,
+              `- Problem: ${issue.message}`,
+              `- Suggestion: ${issue.suggestion}`,
+              "",
+            );
+          });
+        }
+
+        if (state.test) {
+          lines.push("## Tests", "", `- Command: ${state.test.command || "N/A"}`, `- Status: ${labelStatus(state.test.test_status)}`, `- Failed cases: ${state.test.failed_cases ?? "N/A"}`, "");
+          if (state.test.llm_explanation) lines.push(`Explanation: ${state.test.llm_explanation}`, "");
+        }
+
+        return lines.join("\n");
+      }
+
+      function downloadMarkdown() {
+        const blob = new Blob([$("#report-text").value], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `code-review-report-${Date.now()}.md`;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function printReport() {
+        const report = escapeHtml($("#report-text").value);
+        const win = window.open("", "_blank");
+        win.document.write(`<pre style="font: 13px/1.5 Consolas, monospace; white-space: pre-wrap">${report}</pre>`);
+        win.document.close();
+        win.print();
+      }
+
+      function setView(view) {
+        state.currentView = view;
+        $$(".section").forEach((section) => section.classList.toggle("active", section.id === `view-${view}`));
+        $$(".nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+        $("#page-title").textContent = views[view][0];
+        $("#page-subtitle").textContent = views[view][1];
+        if (view === "report") renderReport();
+      }
+
+      function showError(message) {
+        setView("task");
+        if (!state.task) state.task = { steps: [] };
+        state.task.steps.unshift({ id: "error", label: "任务失败", status: "failed", detail: message });
+        renderProgress();
+      }
+
+      function setBusy(isBusy) {
+        $("#start-review").disabled = isBusy;
+        $("#run-tests-only").disabled = isBusy;
+      }
+
+      function scoreReview(issues, test) {
+        if (issues.some((issue) => issue.severity === "high") || test?.test_status === "failed") return "C";
+        if (issues.some((issue) => issue.severity === "medium")) return "B";
+        if (issues.length > 0) return "A-";
+        return "A";
+      }
+
+      function summarizeSources(issues) {
+        const sources = new Set(issues.map((issue) => issue.source || "LLM"));
+        return sources.size ? Array.from(sources).join(" + ") : "-";
+      }
+
+      function formatSeverity(value) {
+        return { high: "High", medium: "Medium", low: "Low" }[value] || value;
+      }
+
+      function formatCategory(value) {
+        return String(value || "Unknown")
+          .replaceAll("_", " ")
+          .replace(/\b\w/g, (letter) => letter.toUpperCase());
+      }
+
+      function labelStatus(value) {
+        return (
+          {
+            pending: "等待",
+            running: "运行中",
+            done: "完成",
+            skipped: "跳过",
+            failed: "失败",
+            passed: "通过",
+            timeout: "超时",
+            unsupported: "不支持",
+            error: "错误",
+          }[value] || value
+        );
+      }
+
+      function isSkippableDiffError(message) {
+        return message.includes("Path is not a Git repository") || message.includes("No diff found for");
+      }
+
+      function toDiffSkipMessage(message, baseBranch) {
+        if (message.includes("Path is not a Git repository")) {
+          return "当前目录不是 Git 仓库，已跳过 diff 上下文；评审将基于静态分析和测试结果继续。";
+        }
+        if (message.includes("No diff found for")) {
+          return `未发现 ${baseBranch}...HEAD 的代码变更，已跳过 diff 上下文。`;
+        }
+        return "已跳过 diff 上下文。";
       }
 
       function escapeHtml(value) {
-        return String(value)
+        return String(value ?? "")
           .replaceAll("&", "&amp;")
           .replaceAll("<", "&lt;")
           .replaceAll(">", "&gt;")
