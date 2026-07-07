@@ -1,8 +1,10 @@
 # Phase 4: Static Analysis
 
-Phase 4 runs deterministic local tools before relying only on the LLM. Repository
-reviews now return one merged `issues` list where every item includes a `source`
-field, such as `LLM`, `ruff`, `mypy`, `bandit`, or `npm`.
+Phase 4 runs deterministic local tools before the final LLM review. Repository
+reviews collect Git diff context, static-analysis findings, and optional test
+results first, then send that combined evidence to the reviewer once. The
+response is one deduplicated `issues` list where every item includes a `source`
+field, such as `LLM`, `ruff`, `mypy`, `bandit`, `npm`, or `LLM + pytest`.
 
 Supported tool detection:
 
@@ -52,4 +54,6 @@ Example merged issue:
 
 `run_tests: true` returns the detailed `test_result` object from Phase 3.
 Test commands such as `pytest` and `npm test` are not merged as static-analysis
-issues, so test failures appear in one place only.
+issues. They are passed into the final repository review prompt as runtime
+evidence, so a test failure and a matching diff issue can be reported as one
+combined issue instead of duplicate cards.

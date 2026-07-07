@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from fastapi import HTTPException
 from openai import AsyncOpenAI
 
-from app.schemas import ReviewIssue, ReviewResponse
+from app.schemas import ReviewIssue, ReviewResponse, TestRunResponse
 from app.settings import Settings
 
 
@@ -19,13 +19,14 @@ REVIEW_JSON_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": ["string", "null"]},
+                    "source": {"type": "string"},
                     "severity": {"type": "string", "enum": ["low", "medium", "high"]},
                     "category": {"type": "string"},
                     "line": {"type": ["integer", "null"]},
                     "message": {"type": "string"},
                     "suggestion": {"type": "string"},
                 },
-                "required": ["file_path", "severity", "category", "line", "message", "suggestion"],
+                "required": ["file_path", "source", "severity", "category", "line", "message", "suggestion"],
             },
         },
     },
@@ -40,6 +41,16 @@ class CodeReviewer(ABC):
 
     @abstractmethod
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def review_repository(
+        self,
+        language: str,
+        diff_context: str | None,
+        static_issues: list[ReviewIssue],
+        test_result: TestRunResponse | None,
+    ) -> ReviewResponse:
         raise NotImplementedError
 
     @abstractmethod
@@ -153,6 +164,37 @@ class MockReviewer(CodeReviewer):
             return ReviewResponse(summary="No issues found in changed lines.", issues=[])
         return ReviewResponse(summary=f"Found {len(issues)} issue(s) in changed lines.", issues=issues)
 
+    async def review_repository(
+        self,
+        language: str,
+        diff_context: str | None,
+        static_issues: list[ReviewIssue],
+        test_result: TestRunResponse | None,
+    ) -> ReviewResponse:
+        issues = list(static_issues)
+        if diff_context is not None:
+            diff_response = await self.review_diff(language, diff_context)
+            issues.extend(_merge_new_issues(issues, diff_response.issues))
+
+        if test_result and test_result.test_status == "failed" and not _has_logic_bug(issues):
+            issues.append(
+                ReviewIssue(
+                    file_path=None,
+                    source="pytest + LLM",
+                    severity="high",
+                    category="test_failure",
+                    line=None,
+                    message="Automated tests failed and need investigation.",
+                    suggestion="Use the first failing test and assertion in the log to locate the broken behavior.",
+                )
+            )
+
+        if issues:
+            return ReviewResponse(summary=f"Found {len(issues)} issue(s) from combined repository evidence.", issues=issues)
+        if test_result and test_result.test_status == "passed":
+            return ReviewResponse(summary="No review issues found. Automated tests passed.", issues=[])
+        return ReviewResponse(summary="No review issues found.", issues=[])
+
     async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
         if "assert" in log_excerpt.lower():
             return f"{command} 失败：至少一个断言的实际结果和期望结果不一致。下一步：先查看第一个失败用例对应的函数实现。"
@@ -199,6 +241,7 @@ Use context lines only to understand the change.
 Do not comment on unchanged context lines or removed lines.
 Do not give generic advice.
 Every issue must include file_path, line, severity, reason in message, and suggestion.
+Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
 If there are no real issues, return an empty issues array.
 Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
 
@@ -207,6 +250,52 @@ Language: {language}
 Diff context:
 ```text
 {diff_context}
+```
+""".strip()
+
+        return await self._complete_review(prompt)
+
+    async def review_repository(
+        self,
+        language: str,
+        diff_context: str | None,
+        static_issues: list[ReviewIssue],
+        test_result: TestRunResponse | None,
+    ) -> ReviewResponse:
+        prompt = f"""
+You are a code review assistant.
+Review the repository using all evidence below after local tools have finished.
+Return one deduplicated issue list.
+
+Rules:
+- Treat the Git diff as the primary code context when it exists.
+- If Git diff is unavailable, do not mention that as a problem; use static analysis and test evidence only.
+- Static-analysis findings are tool evidence. Keep them when they identify a real issue, but merge them with duplicate LLM or test findings.
+- Test failures are evidence about runtime behavior. If a test failure and a diff issue point to the same root cause, return one issue and mention both signals in the message or suggestion.
+- Do not create a separate pytest issue when the same bug is already represented by a code issue.
+- Do not comment on unchanged context lines or removed lines unless needed to explain an added or modified line.
+- Do not give generic advice.
+- Every issue must include file_path, source, line, severity, category, message, and suggestion.
+- Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
+- Use source values like "LLM", "ruff", "mypy", "bandit", "pytest + LLM", or "LLM + pytest" to reflect the strongest evidence.
+- If there are no real issues, return an empty issues array.
+- Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
+
+Language: {language}
+
+Git diff context:
+```text
+{diff_context or "Git diff unavailable or skipped."}
+```
+
+Static analysis issues:
+```json
+{json.dumps([issue.model_dump() for issue in static_issues], ensure_ascii=False, indent=2)}
+```
+
+Test result:
+```json
+{json.dumps(test_result.model_dump() if test_result else None, ensure_ascii=False, indent=2)}
 ```
 """.strip()
 
@@ -258,7 +347,10 @@ Test log:
             completion = await self.client.chat.completions.create(
                 model=self.settings.deepseek_model,
                 messages=[
-                    {"role": "system", "content": "You are a code review assistant that returns strict JSON only."},
+                    {
+                        "role": "system",
+                        "content": "You are a code review assistant. Return strict JSON only. Write user-facing review text in Simplified Chinese.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
@@ -282,6 +374,26 @@ def build_reviewer(settings: Settings) -> CodeReviewer:
     if settings.llm_provider == "deepseek":
         return DeepSeekReviewer(settings)
     return MockReviewer()
+
+
+def _merge_new_issues(existing: list[ReviewIssue], candidates: list[ReviewIssue]) -> list[ReviewIssue]:
+    merged: list[ReviewIssue] = []
+    keys = {_issue_key(issue) for issue in existing}
+    for issue in candidates:
+        key = _issue_key(issue)
+        if key in keys:
+            continue
+        keys.add(key)
+        merged.append(issue)
+    return merged
+
+
+def _issue_key(issue: ReviewIssue) -> tuple[str | None, int | None, str]:
+    return (issue.file_path, issue.line, issue.category)
+
+
+def _has_logic_bug(issues: list[ReviewIssue]) -> bool:
+    return any(issue.category in {"logic_bug", "test_failure"} for issue in issues)
 
 
 def _find_first_line(code: str, keywords: tuple[str, ...]) -> int | None:

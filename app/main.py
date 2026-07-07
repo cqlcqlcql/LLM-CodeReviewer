@@ -80,27 +80,22 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
                 explain_failures=False,
             )
 
-        if diff_context is not None:
-            response = await reviewer.review_diff(payload.language, diff_context)
-            response.notices.extend(notices)
+        if diff_context is not None or static_issues or test_result is not None:
+            response = await reviewer.review_repository(
+                payload.language,
+                diff_context,
+                static_issues,
+                test_result,
+            )
         else:
             response = ReviewResponse(
                 summary="No review issues found.",
                 issues=[],
-                notices=notices,
             )
 
-        response.issues.extend(static_issues)
-        response.summary = _append_static_source_summary(response.summary, static_issues)
-
+        response.notices.extend(notices)
         if test_result is not None:
-            if test_result.test_status == "failed" and test_result.llm_explanation is None and test_result.command:
-                test_result.llm_explanation = await reviewer.explain_test_failure(
-                    test_result.command,
-                    test_result.log_excerpt,
-                )
             response.test_result = test_result
-            response.summary = _append_test_result_summary(response.summary, test_result)
         return response
 
     code = payload.code
@@ -146,54 +141,6 @@ async def repository_diff(payload: DiffRequest) -> DiffResponse:
         for changed_file in parse_unified_diff(diff)
     ]
     return DiffResponse(base_branch=payload.base_branch, diff=diff, files=files)
-
-
-def _append_static_source_summary(summary: str, issues: list[ReviewIssue]) -> str:
-    if not issues:
-        return summary
-
-    counts: dict[str, int] = {}
-    for issue in issues:
-        counts[issue.source] = counts.get(issue.source, 0) + 1
-    source_summary = ", ".join(f"{source}: {count}" for source, count in sorted(counts.items()))
-    return f"{summary} Static sources: {source_summary}."
-
-
-def _append_test_result_summary(summary: str, test_result: TestRunResponse) -> str:
-    if test_result.test_status == "passed":
-        test_summary = "Automated tests passed."
-    elif test_result.test_status == "failed":
-        if test_result.failed_cases is None:
-            test_summary = "Automated tests failed."
-        else:
-            test_summary = f"Automated tests failed with {test_result.failed_cases} failing case(s)."
-        cause = _first_test_explanation_sentence(test_result.llm_explanation)
-        if cause:
-            test_summary = f"{test_summary} {cause}"
-    elif test_result.test_status == "timeout":
-        test_summary = "Automated tests timed out."
-    elif test_result.test_status == "unsupported":
-        test_summary = "No supported automated test command was detected."
-    else:
-        test_summary = "Automated tests could not be started."
-
-    if summary == "No review issues found." or summary.startswith("No review issues found. Static sources:"):
-        return test_summary
-    return f"{summary} {test_summary}"
-
-
-def _first_test_explanation_sentence(explanation: str | None) -> str:
-    if not explanation:
-        return ""
-    cleaned = re.sub(r"[*_`#>-]+", "", explanation)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
-        return ""
-    match = re.match(r"(.+?[.!?])(?:\s|$)", cleaned)
-    sentence = match.group(1) if match else cleaned
-    if len(sentence) > 220:
-        sentence = sentence[:217].rstrip() + "..."
-    return sentence
 
 
 def _is_no_diff_error(exc: HTTPException) -> bool:

@@ -54,7 +54,7 @@ def test_review_repository_uses_configured_base_branch(tmp_path):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "Found 1 issue(s) in changed lines."
+    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
     assert data["issues"][0]["file_path"] == "calculator.py"
     assert data["issues"][0]["line"] == 4
     assert data["issues"][0]["severity"] == "high"
@@ -229,7 +229,7 @@ def test_review_repository_merges_static_analysis_issues(tmp_path, monkeypatch):
     data = response.json()
     assert data["issues"][0]["source"] == "ruff"
     assert data["issues"][0]["category"] == "F841"
-    assert "Static sources: ruff: 1" in data["summary"]
+    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
 
 
 def test_review_repository_without_diff_can_still_run_static_analysis(tmp_path, monkeypatch):
@@ -264,7 +264,7 @@ def test_review_repository_without_diff_can_still_run_static_analysis(tmp_path, 
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "No review issues found. Static sources: mypy: 1."
+    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
     assert data["notices"] == ["No diff found for main...HEAD; skipped Git diff review."]
     assert data["issues"][0]["source"] == "mypy"
 
@@ -302,7 +302,7 @@ def test_review_non_git_repository_can_still_run_static_analysis_and_tests(tmp_p
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "Automated tests passed."
+    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
     assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
     assert data["issues"][0]["source"] == "ruff"
     assert data["test_result"]["test_status"] == "passed"
@@ -338,15 +338,14 @@ def test_review_non_git_repository_summarizes_test_failure_without_diff_text(tmp
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == (
-        "Automated tests failed with 1 failing case(s). "
-        "pytest 失败：至少一个断言的实际结果和期望结果不一致。下一步：先查看第一个失败用例对应的函数实现。"
-    )
+    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
     assert "diff" not in data["summary"].lower()
     assert "No review issues found" not in data["summary"]
     assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
-    assert data["issues"] == []
+    assert data["issues"][0]["source"] == "pytest + LLM"
+    assert data["issues"][0]["category"] == "test_failure"
     assert data["test_result"]["test_status"] == "failed"
+    assert data["test_result"]["llm_explanation"] is None
 
 
 def test_review_requires_code_or_repository():

@@ -14,10 +14,13 @@ Supported project detection:
 
 Test runs are limited by `timeout_seconds`, with repository reviews using a
 60-second default. The backend captures stdout and stderr, records pass/fail
-status, extracts a failed-case count when the test tool reports one, and asks
-the configured reviewer to explain failed test logs.
+status, and extracts a failed-case count when the test tool reports one.
+Direct `POST /api/test` calls still ask the configured reviewer to explain
+failed test logs. Repository reviews instead pass the test result into the
+final combined review prompt so diff, static-analysis, and test evidence can
+be deduplicated in one model call.
 
-Example response:
+Example `test_result` inside a repository review response:
 
 ```json
 {
@@ -25,6 +28,6 @@ Example response:
   "command": "pytest",
   "failed_cases": 2,
   "log_excerpt": "...",
-  "llm_explanation": "pytest failed because one or more assertions did not match the expected behavior."
+  "llm_explanation": null
 }
 ```

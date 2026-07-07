@@ -542,7 +542,8 @@
 
       .issue-list {
         display: grid;
-        gap: 10px;
+        gap: 12px;
+        margin-top: 18px;
       }
 
       .issue-card {
@@ -595,7 +596,7 @@
 
       .evidence-line {
         display: grid;
-        grid-template-columns: 46px minmax(0, 1fr);
+        grid-template-columns: 58px minmax(0, 1fr);
         gap: 8px;
         padding: 3px 10px;
         font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
@@ -1258,7 +1259,7 @@
       function renderResult() {
         const review = state.review;
         const issues = review?.issues || [];
-        const displayedIssues = enrichIssues([...issues, ...testFindings()]);
+        const displayedIssues = enrichIssues(issues);
         const hasDiff = Boolean(state.diff?.diff);
         $("#result-grid").classList.toggle("no-diff", !hasDiff);
         $("#context-title").textContent = hasDiff ? "变更摘要" : "项目上下文";
@@ -1293,7 +1294,7 @@
       }
 
       function renderIssue(issue) {
-        const location = issue.location_label || `${issue.file_path || "代码片段"}:${issue.line || "?"}`;
+        const location = formatIssueLocation(issue);
         return `
           <article class="issue-card ${issue.severity === "high" ? "high-priority" : ""}">
             <div class="issue-head">
@@ -1312,7 +1313,20 @@
         return issues.map((issue) => {
           if (issue.evidence) return issue;
           const evidence = findDiffEvidence(issue);
-          return evidence ? { ...issue, evidence_label: "代码切片", evidence } : issue;
+          if (evidence.length) return { ...issue, evidence_label: "代码切片", evidence };
+          if (String(issue.source || "").toLowerCase().includes("pytest")) {
+            const logEvidence = findLogEvidence(issue.location_label || issue.message || "assert");
+            const logLocation = issue.location_label || formatPytestLocation(findPytestLocation());
+            if (logEvidence.length) {
+              return {
+                ...issue,
+                location_label: logLocation || issue.location_label,
+                evidence_label: "日志切片",
+                evidence: logEvidence,
+              };
+            }
+          }
+          return issue;
         });
       }
 
@@ -1327,7 +1341,7 @@
       }
 
       function renderEvidenceLine(line) {
-        const lineNo = line.line == null ? "" : String(line.line);
+        const lineNo = line.line_label || (line.line == null ? "" : String(line.line));
         return `
           <div class="evidence-line ${line.hit ? "hit" : ""}">
             <span>${escapeHtml(lineNo)}</span>
@@ -1366,21 +1380,44 @@
         const start = Math.max(0, index - 2);
         return lines.slice(start, start + 6).map((line, offset) => ({
           line: start + offset + 1,
+          line_label: `日志 ${start + offset + 1}`,
           text: line || "(空行)",
           hit: start + offset === index,
         }));
+      }
+
+      function findPytestLocation() {
+        const log = String(state.test?.log_excerpt || "");
+        const matches = [...log.matchAll(/(?:^|\s)([^\s:]+\.py):(\d+)(?::|\s|$)/g)];
+        if (!matches.length) return null;
+        const nonSitePackage = matches.find((match) => !/site-packages|\.venv|venv/i.test(match[1]));
+        const match = nonSitePackage || matches[0];
+        return { file: match[1], line: match[2] };
+      }
+
+      function formatPytestLocation(location) {
+        return location ? `${location.file}:${location.line}` : "";
       }
 
       function displaySummary(review, displayedIssues) {
         if (!review) return "尚未运行评审。";
         if (state.test?.test_status === "failed") {
           const failedCases = state.test.failed_cases ?? "若干";
-          return `自动化测试失败，${failedCases} 个用例未通过。问题已按失败点拆分，并附带对应证据切片。`;
+          return `自动化测试失败，${failedCases} 个用例未通过。`;
         }
         if (displayedIssues.length > 0) {
           return `发现 ${displayedIssues.length} 个需要处理的问题。`;
         }
         return "本次没有发现明确评审问题。";
+      }
+
+      function formatIssueLocation(issue) {
+        if (issue.location_label) return issue.location_label;
+        if (issue.file_path && issue.line) return `${issue.file_path}:${issue.line}`;
+        if (issue.file_path) return issue.file_path;
+        if (issue.line) return `第 ${issue.line} 行`;
+        if (String(issue.source || "").toLowerCase().includes("pytest")) return "测试日志";
+        return "项目证据";
       }
 
       function testFindings() {
@@ -1761,7 +1798,7 @@
 
       function buildReport() {
         const review = state.review;
-        const issues = [...(review?.issues || []), ...testFindings()];
+        const issues = review?.issues || [];
         const lines = [
           "# Code Review Report",
           "",
@@ -1782,7 +1819,7 @@
             lines.push(
               `### ${index + 1}. ${formatSeverity(issue.severity)} / ${formatCategory(issue.category)}`,
               "",
-              `- Location: ${issue.location_label || `${issue.file_path || "pasted code"}:${issue.line || "?"}`}`,
+              `- Location: ${formatIssueLocation(issue)}`,
               `- Source: ${issue.source || "LLM"}`,
               `- Problem: ${issue.message}`,
               `- Suggestion: ${issue.suggestion}`,
