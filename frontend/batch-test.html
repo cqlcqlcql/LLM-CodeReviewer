@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Batch Review Test</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --text: #172033;
+        --muted: #667085;
+        --line: #d7dce5;
+        --blue: #2563eb;
+        --green: #087443;
+        --red: #c2410c;
+        --amber: #9a6700;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 24px 0 40px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.2;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+
+      input[type="text"],
+      input[type="number"],
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+        color: var(--text);
+      }
+
+      input[type="text"],
+      input[type="number"],
+      select {
+        height: 40px;
+        padding: 0 10px;
+      }
+
+      textarea {
+        min-height: 120px;
+        padding: 10px;
+        resize: vertical;
+      }
+
+      input[type="file"] {
+        width: 100%;
+        min-height: 40px;
+      }
+
+      .picker-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .picker-row input[type="file"] {
+        flex: 1 1 220px;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr 0.8fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .option-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .check-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-top: 12px;
+      }
+
+      .check-row label {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        margin: 0;
+        color: var(--text);
+      }
+
+      button {
+        min-height: 40px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 14px;
+        background: #fff;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      button.primary {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        margin: 14px 0;
+      }
+
+      .stat {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      .stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .stat strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 24px;
+      }
+
+      progress {
+        width: 100%;
+        height: 12px;
+        accent-color: var(--blue);
+      }
+
+      .status-line {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 8px;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .file-cell {
+        width: 22%;
+        overflow-wrap: anywhere;
+      }
+
+      .message-cell {
+        width: 45%;
+        overflow-wrap: anywhere;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border-radius: 999px;
+        padding: 0 8px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .tag.ok {
+        background: #dff8ea;
+        color: var(--green);
+      }
+
+      .tag.bad {
+        background: #fff1e7;
+        color: var(--red);
+      }
+
+      .tag.warn {
+        background: #fff8d6;
+        color: var(--amber);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      @media (max-width: 820px) {
+        header,
+        .grid,
+        .controls,
+        .stats {
+          grid-template-columns: 1fr;
+        }
+
+        header {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>批量评审测试</h1>
+          <div class="status-line" id="health">后端状态：未连接</div>
+        </div>
+        <a href="/">返回主界面</a>
+      </header>
+
+      <section class="panel" style="margin-bottom: 14px">
+        <h2>批测类型</h2>
+        <div class="option-row">
+          <div>
+            <label for="target-kind">目标类型</label>
+            <select id="target-kind">
+              <option value="code" selected>代码文件</option>
+              <option value="repository">Git / 非 Git 仓库路径</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid" id="code-inputs">
+        <div class="panel">
+          <h2>错误代码目录</h2>
+          <label for="buggy-dir">选择 python_programs</label>
+          <div class="picker-row">
+            <button id="pick-buggy-dir" type="button">选择文件夹</button>
+            <input id="buggy-dir" type="file" webkitdirectory directory multiple />
+          </div>
+          <div class="status-line" id="buggy-count">0 个 Python 文件</div>
+        </div>
+
+        <div class="panel">
+          <h2>正确代码目录</h2>
+          <label for="correct-dir">选择 correct_python_programs</label>
+          <div class="picker-row">
+            <button id="pick-correct-dir" type="button">选择文件夹</button>
+            <input id="correct-dir" type="file" webkitdirectory directory multiple />
+          </div>
+          <div class="status-line" id="correct-count">0 个 Python 文件</div>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="repository-inputs">
+        <h2>仓库路径</h2>
+        <div class="grid">
+          <div>
+            <label for="buggy-repos">应显示错误的仓库或目录，每行一个路径</label>
+            <textarea id="buggy-repos" placeholder="D:\profile\buggy-repo-1&#10;D:\profile\buggy-non-git-dir"></textarea>
+          </div>
+          <div>
+            <label for="correct-repos">应无问题的仓库或目录，每行一个路径</label>
+            <textarea id="correct-repos" placeholder="D:\profile\correct-repo-1&#10;D:\profile\correct-non-git-dir"></textarea>
+          </div>
+        </div>
+        <div class="option-row" style="margin-top: 12px">
+          <div>
+            <label for="repo-base-branch">Git base branch</label>
+            <input id="repo-base-branch" type="text" value="main" />
+          </div>
+        </div>
+        <div class="check-row">
+          <label><input id="repo-static" type="checkbox" checked /> 静态分析</label>
+          <label><input id="repo-tests" type="checkbox" /> 运行测试</label>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 14px">
+        <h2>运行设置</h2>
+        <div class="controls">
+          <div>
+            <label for="api-base">后端地址</label>
+            <input id="api-base" type="text" value="" placeholder="默认使用当前页面地址" />
+          </div>
+          <div>
+            <label for="concurrency">并发数</label>
+            <input id="concurrency" type="number" min="1" max="5" value="1" />
+          </div>
+          <div>
+            <label for="language">语言</label>
+            <select id="language">
+              <option value="python" selected>python</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="start" type="button">开始批量测试</button>
+          <button id="stop" type="button" disabled>停止</button>
+          <button id="download-json" type="button" disabled>导出 JSON</button>
+          <button id="download-csv" type="button" disabled>导出 CSV</button>
+          <button id="clear" type="button">清空结果</button>
+        </div>
+        <div style="margin-top: 14px">
+          <progress id="progress" max="1" value="0"></progress>
+          <div class="status-line" id="current">等待开始</div>
+        </div>
+      </section>
+
+      <section class="stats">
+        <div class="stat"><span>总数</span><strong id="stat-total">0</strong></div>
+        <div class="stat"><span>已完成</span><strong id="stat-done">0</strong></div>
+        <div class="stat"><span>错误代码漏报</span><strong id="stat-fn">0</strong></div>
+        <div class="stat"><span>正确代码误报</span><strong id="stat-fp">0</strong></div>
+        <div class="stat"><span>请求失败</span><strong id="stat-errors">0</strong></div>
+      </section>
+
+      <section class="panel">
+        <h2>异常结果</h2>
+        <table>
+          <thead>
+            <tr>
+              <th class="file-cell">文件</th>
+              <th>期望</th>
+              <th>判定</th>
+              <th>问题数</th>
+              <th class="message-cell">模型输出</th>
+            </tr>
+          </thead>
+          <tbody id="mismatch-body">
+            <tr>
+              <td colspan="5" class="muted">还没有异常结果。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+
+    <script>
+      const state = {
+        running: false,
+        cancelled: false,
+        results: [],
+      };
+
+      const $ = (selector) => document.querySelector(selector);
+
+      const els = {
+        targetKind: $("#target-kind"),
+        codeInputs: $("#code-inputs"),
+        repositoryInputs: $("#repository-inputs"),
+        buggyDir: $("#buggy-dir"),
+        correctDir: $("#correct-dir"),
+        pickBuggyDir: $("#pick-buggy-dir"),
+        pickCorrectDir: $("#pick-correct-dir"),
+        buggyRepos: $("#buggy-repos"),
+        correctRepos: $("#correct-repos"),
+        repoBaseBranch: $("#repo-base-branch"),
+        repoStatic: $("#repo-static"),
+        repoTests: $("#repo-tests"),
+        buggyCount: $("#buggy-count"),
+        correctCount: $("#correct-count"),
+        apiBase: $("#api-base"),
+        concurrency: $("#concurrency"),
+        language: $("#language"),
+        start: $("#start"),
+        stop: $("#stop"),
+        clear: $("#clear"),
+        downloadJson: $("#download-json"),
+        downloadCsv: $("#download-csv"),
+        progress: $("#progress"),
+        current: $("#current"),
+        health: $("#health"),
+        mismatchBody: $("#mismatch-body"),
+        statTotal: $("#stat-total"),
+        statDone: $("#stat-done"),
+        statFn: $("#stat-fn"),
+        statFp: $("#stat-fp"),
+        statErrors: $("#stat-errors"),
+      };
+
+      els.targetKind.addEventListener("change", renderTargetMode);
+      els.buggyDir.addEventListener("change", renderFileCounts);
+      els.correctDir.addEventListener("change", renderFileCounts);
+      els.pickBuggyDir.addEventListener("click", () => pickDirectory("buggy"));
+      els.pickCorrectDir.addEventListener("click", () => pickDirectory("correct"));
+      els.start.addEventListener("click", startBatch);
+      els.stop.addEventListener("click", () => {
+        state.cancelled = true;
+        els.current.textContent = "正在停止，已发出的请求会先结束。";
+      });
+      els.clear.addEventListener("click", clearResults);
+      els.downloadJson.addEventListener("click", downloadJson);
+      els.downloadCsv.addEventListener("click", downloadCsv);
+
+      checkHealth();
+      prepareDirectoryPicker();
+      renderTargetMode();
+
+      function getApiBase() {
+        return els.apiBase.value.trim().replace(/\/$/, "");
+      }
+
+      function prepareDirectoryPicker() {
+        if (!("showDirectoryPicker" in window)) {
+          els.pickBuggyDir.classList.add("hidden");
+          els.pickCorrectDir.classList.add("hidden");
+          return;
+        }
+
+        els.buggyDir.classList.add("hidden");
+        els.correctDir.classList.add("hidden");
+      }
+
+      function renderTargetMode() {
+        const isRepository = els.targetKind.value === "repository";
+        els.codeInputs.classList.toggle("hidden", isRepository);
+        els.repositoryInputs.classList.toggle("hidden", !isRepository);
+      }
+
+      async function checkHealth() {
+        try {
+          const response = await fetch(`${getApiBase()}/api/health`);
+          const health = await readJson(response);
+          els.health.textContent = `后端状态：在线 / ${health.provider}`;
+        } catch (error) {
+          els.health.textContent = `后端状态：未连接（${error.message}）`;
+        }
+      }
+
+      function pyFiles(input) {
+        return Array.from(input.files || [])
+          .filter((file) => file.name.toLowerCase().endsWith(".py"))
+          .sort((a, b) => fileLabel(a).localeCompare(fileLabel(b)));
+      }
+
+      async function pickDirectory(kind) {
+        try {
+          const handle = await window.showDirectoryPicker({ mode: "read" });
+          const files = await collectPythonFiles(handle);
+          state[`${kind}Files`] = files;
+          if (kind === "buggy") {
+            els.buggyCount.textContent = `${files.length} 个 Python 文件`;
+          } else {
+            els.correctCount.textContent = `${files.length} 个 Python 文件`;
+          }
+        } catch (error) {
+          if (error.name !== "AbortError") {
+            els.current.textContent = `选择目录失败：${error.message}`;
+          }
+        }
+      }
+
+      async function collectPythonFiles(directoryHandle, prefix = directoryHandle.name) {
+        const ignoredDirs = new Set([".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__"]);
+        const files = [];
+
+        for await (const [name, handle] of directoryHandle.entries()) {
+          if (handle.kind === "directory") {
+            if (ignoredDirs.has(name)) continue;
+            files.push(...(await collectPythonFiles(handle, `${prefix}/${name}`)));
+            continue;
+          }
+
+          if (!name.toLowerCase().endsWith(".py")) continue;
+          const file = await handle.getFile();
+          Object.defineProperty(file, "webkitRelativePath", {
+            value: `${prefix}/${name}`,
+            configurable: true,
+          });
+          files.push(file);
+        }
+
+        return files.sort((a, b) => fileLabel(a).localeCompare(fileLabel(b)));
+      }
+
+      function fileLabel(file) {
+        return file.webkitRelativePath || file.name;
+      }
+
+      function renderFileCounts() {
+        els.buggyCount.textContent = `${pyFiles(els.buggyDir).length} 个 Python 文件`;
+        els.correctCount.textContent = `${pyFiles(els.correctDir).length} 个 Python 文件`;
+      }
+
+      async function startBatch() {
+        const jobs = els.targetKind.value === "repository" ? repositoryJobs() : codeFileJobs();
+
+        if (!jobs.length) {
+          els.current.textContent =
+            els.targetKind.value === "repository" ? "请填写至少一个仓库或目录路径。" : "请选择至少一个包含 Python 文件的目录。";
+          return;
+        }
+
+        state.running = true;
+        state.cancelled = false;
+        state.results = [];
+        setRunning(true);
+        renderStats(jobs.length);
+        renderMismatches();
+        els.progress.max = jobs.length;
+        els.progress.value = 0;
+
+        const concurrency = Math.max(1, Math.min(5, Number(els.concurrency.value) || 1));
+        let nextIndex = 0;
+
+        const worker = async () => {
+          while (!state.cancelled && nextIndex < jobs.length) {
+            const job = jobs[nextIndex++];
+            await reviewJob(job, jobs.length);
+          }
+        };
+
+        try {
+          await Promise.all(Array.from({ length: concurrency }, worker));
+        } finally {
+          state.running = false;
+          setRunning(false);
+          renderStats(jobs.length);
+          renderMismatches();
+          els.current.textContent = state.cancelled ? "已停止。" : "批量测试完成。";
+        }
+      }
+
+      function codeFileJobs() {
+        const buggySelection = state.buggyFiles || pyFiles(els.buggyDir);
+        const correctSelection = state.correctFiles || pyFiles(els.correctDir);
+        const buggyFiles = buggySelection.map((file) => ({ file, expected: "buggy", kind: "code" }));
+        const correctFiles = correctSelection.map((file) => ({ file, expected: "correct", kind: "code" }));
+        return buggyFiles.concat(correctFiles);
+      }
+
+      function repositoryJobs() {
+        const buggyRepos = pathLines(els.buggyRepos.value).map((repositoryPath) => ({
+          repositoryPath,
+          expected: "buggy",
+          kind: "repository",
+        }));
+        const correctRepos = pathLines(els.correctRepos.value).map((repositoryPath) => ({
+          repositoryPath,
+          expected: "correct",
+          kind: "repository",
+        }));
+        return buggyRepos.concat(correctRepos);
+      }
+
+      function pathLines(value) {
+        return value
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+      }
+
+      async function reviewJob(job, total) {
+        const label = job.kind === "repository" ? job.repositoryPath : fileLabel(job.file);
+        els.current.textContent = `正在评审：${label}`;
+        const startedAt = new Date().toISOString();
+
+        try {
+          const response = job.kind === "repository" ? await requestRepositoryReview(job) : await requestCodeReview(job);
+          const review = await readJson(response);
+          const issueCount = Array.isArray(review.issues) ? review.issues.length : 0;
+          state.results.push({
+            file: label,
+            kind: job.kind,
+            expected: job.expected,
+            status: classify(job.expected, issueCount),
+            issue_count: issueCount,
+            summary: review.summary || "",
+            issues: review.issues || [],
+            error: null,
+            started_at: startedAt,
+            finished_at: new Date().toISOString(),
+          });
+        } catch (error) {
+          state.results.push({
+            file: label,
+            kind: job.kind,
+            expected: job.expected,
+            status: "error",
+            issue_count: 0,
+            summary: "",
+            issues: [],
+            error: error.message,
+            started_at: startedAt,
+            finished_at: new Date().toISOString(),
+          });
+        }
+
+        els.progress.value = state.results.length;
+        renderStats(total);
+        renderMismatches();
+      }
+
+      async function requestCodeReview(job) {
+        const code = await job.file.text();
+        return fetch(`${getApiBase()}/api/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            language: els.language.value,
+            code,
+            run_static_analysis: false,
+            run_tests: false,
+          }),
+        });
+      }
+
+      async function requestRepositoryReview(job) {
+        return fetch(`${getApiBase()}/api/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            language: els.language.value,
+            repository_path: job.repositoryPath,
+            base_branch: els.repoBaseBranch.value.trim() || "main",
+            run_static_analysis: els.repoStatic.checked,
+            run_tests: els.repoTests.checked,
+          }),
+        });
+      }
+
+      function classify(expected, issueCount) {
+        if (expected === "buggy" && issueCount === 0) return "false_negative";
+        if (expected === "correct" && issueCount > 0) return "false_positive";
+        return "ok";
+      }
+
+      async function readJson(response) {
+        const text = await response.text();
+        let data;
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          throw new Error(text || `HTTP ${response.status}`);
+        }
+        if (!response.ok) {
+          const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
+          throw new Error(detail || `HTTP ${response.status}`);
+        }
+        return data;
+      }
+
+      function setRunning(running) {
+        els.start.disabled = running;
+        els.stop.disabled = !running;
+        els.buggyDir.disabled = running;
+        els.correctDir.disabled = running;
+        els.pickBuggyDir.disabled = running;
+        els.pickCorrectDir.disabled = running;
+        els.targetKind.disabled = running;
+        els.buggyRepos.disabled = running;
+        els.correctRepos.disabled = running;
+        els.repoBaseBranch.disabled = running;
+        els.repoStatic.disabled = running;
+        els.repoTests.disabled = running;
+        els.apiBase.disabled = running;
+        els.concurrency.disabled = running;
+        els.downloadJson.disabled = running || !state.results.length;
+        els.downloadCsv.disabled = running || !state.results.length;
+      }
+
+      function renderStats(total = state.results.length) {
+        const falseNegatives = state.results.filter((item) => item.status === "false_negative").length;
+        const falsePositives = state.results.filter((item) => item.status === "false_positive").length;
+        const errors = state.results.filter((item) => item.status === "error").length;
+        els.statTotal.textContent = String(total);
+        els.statDone.textContent = String(state.results.length);
+        els.statFn.textContent = String(falseNegatives);
+        els.statFp.textContent = String(falsePositives);
+        els.statErrors.textContent = String(errors);
+        els.downloadJson.disabled = state.running || !state.results.length;
+        els.downloadCsv.disabled = state.running || !state.results.length;
+      }
+
+      function renderMismatches() {
+        const rows = state.results.filter((item) => item.status !== "ok");
+        if (!rows.length) {
+          els.mismatchBody.innerHTML = '<tr><td colspan="5" class="muted">还没有异常结果。</td></tr>';
+          return;
+        }
+
+        els.mismatchBody.innerHTML = rows.map(renderRow).join("");
+      }
+
+      function renderRow(item) {
+        const tag = statusTag(item.status);
+        const expected = item.expected === "buggy" ? "应显示错误" : "应无问题";
+        const message = item.error || issueText(item);
+        return `
+          <tr>
+            <td class="file-cell">${escapeHtml(item.file)}</td>
+            <td>${expected}</td>
+            <td>${tag}</td>
+            <td>${item.issue_count}</td>
+            <td class="message-cell">${escapeHtml(message)}</td>
+          </tr>
+        `;
+      }
+
+      function statusTag(status) {
+        if (status === "false_negative") return '<span class="tag bad">漏报</span>';
+        if (status === "false_positive") return '<span class="tag warn">误报</span>';
+        if (status === "error") return '<span class="tag bad">失败</span>';
+        return '<span class="tag ok">通过</span>';
+      }
+
+      function issueText(item) {
+        if (!item.issues.length) return item.summary || "无问题";
+        return item.issues
+          .map((issue) => {
+            const location = issue.line ? `L${issue.line}` : "未知行";
+            return `${location} ${issue.severity}/${issue.category}: ${issue.message} 建议：${issue.suggestion}`;
+          })
+          .join("\n");
+      }
+
+      function clearResults() {
+        if (state.running) return;
+        state.results = [];
+        els.progress.value = 0;
+        els.current.textContent = "等待开始";
+        renderStats(0);
+        renderMismatches();
+      }
+
+      function downloadJson() {
+        downloadFile("batch-review-results.json", JSON.stringify(state.results, null, 2), "application/json");
+      }
+
+      function downloadCsv() {
+        const header = ["file", "expected", "status", "issue_count", "summary", "issues", "error"];
+        const rows = state.results.map((item) => [
+          item.file,
+          item.expected,
+          item.status,
+          item.issue_count,
+          item.summary,
+          issueText(item),
+          item.error || "",
+        ]);
+        const csv = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+        downloadFile("batch-review-results.csv", csv, "text/csv");
+      }
+
+      function csvCell(value) {
+        return `"${String(value ?? "").replace(/"/g, '""')}"`;
+      }
+
+      function downloadFile(name, content, type) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+    </script>
+  </body>
+</html>

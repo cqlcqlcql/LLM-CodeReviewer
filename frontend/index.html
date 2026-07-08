@@ -752,6 +752,25 @@
         align-items: center;
       }
 
+      .history-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        align-items: center;
+      }
+
+      .history-pagination {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        align-items: center;
+        margin-top: 12px;
+      }
+
+      .history-pagination .muted {
+        margin-right: 4px;
+      }
+
       .muted {
         color: var(--muted);
       }
@@ -834,6 +853,24 @@
         .checks {
           grid-template-columns: 1fr;
           display: grid;
+        }
+
+        .history-actions {
+          justify-content: stretch;
+        }
+
+        .history-actions button {
+          width: 100%;
+        }
+
+        .history-pagination {
+          justify-content: stretch;
+          flex-wrap: wrap;
+        }
+
+        .history-pagination button,
+        .history-pagination .muted {
+          flex: 1 1 auto;
         }
 
         .nav {
@@ -995,11 +1032,12 @@
             <div class="topbar" style="margin-bottom: 12px">
               <div>
                 <h2>历史记录</h2>
-                <p class="subtitle">保存在当前浏览器本地。</p>
+                <p class="subtitle">保存在当前浏览器本地，按钮分页展示。</p>
               </div>
               <button class="danger" id="clear-history" type="button">清空历史</button>
             </div>
             <div class="history-list" id="history-list"></div>
+            <div class="history-pagination" id="history-pagination"></div>
           </div>
         </section>
       </main>
@@ -1014,6 +1052,7 @@
         test: null,
         task: null,
         history: loadHistory(),
+        historyPage: 0,
       };
 
       const views = {
@@ -1027,6 +1066,8 @@
 
       const $ = (selector) => document.querySelector(selector);
       const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+      const HISTORY_PAGE_SIZE = 6;
+      const HISTORY_LIMIT = 100;
 
       $$(".nav button").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
@@ -1807,11 +1848,17 @@
 
       function renderHistory() {
         const list = $("#history-list");
+        const pagination = $("#history-pagination");
         if (!state.history.length) {
           list.innerHTML = '<div class="empty">还没有历史记录。</div>';
+          pagination.innerHTML = "";
           return;
         }
-        list.innerHTML = state.history
+        const totalPages = Math.max(1, Math.ceil(state.history.length / HISTORY_PAGE_SIZE));
+        state.historyPage = Math.min(state.historyPage || 0, totalPages - 1);
+        const start = state.historyPage * HISTORY_PAGE_SIZE;
+        const pageItems = state.history.slice(start, start + HISTORY_PAGE_SIZE);
+        list.innerHTML = pageItems
           .map(
             (item, index) => `
               <div class="history-item">
@@ -1819,11 +1866,22 @@
                   <strong>${escapeHtml(item.repository_path)}</strong>
                   <div class="muted">${escapeHtml(item.created_at)} / ${item.issue_count} 个问题 / 测试 ${escapeHtml(item.test_status)}</div>
                 </div>
-                <button class="secondary" type="button" data-history="${index}">载入摘要</button>
+                <div class="history-actions">
+                  <button class="secondary" type="button" data-history="${start + index}">载入摘要</button>
+                  <button class="danger" type="button" data-delete-history="${start + index}" aria-label="删除这条历史记录">删除</button>
+                </div>
               </div>
             `,
           )
           .join("");
+        pagination.innerHTML =
+          totalPages > 1
+            ? `
+                <span class="muted">第 ${state.historyPage + 1} / ${totalPages} 页，共 ${state.history.length} 条</span>
+                <button class="secondary" type="button" data-history-page="prev" ${state.historyPage === 0 ? "disabled" : ""}>上一页</button>
+                <button class="secondary" type="button" data-history-page="next" ${state.historyPage >= totalPages - 1 ? "disabled" : ""}>下一页</button>
+              `
+            : '<span class="muted">共 1 页</span>';
 
         $$("[data-history]").forEach((button) => {
           button.addEventListener("click", () => {
@@ -1834,6 +1892,16 @@
             state.test = item.test;
             renderAll();
             setView("result");
+          });
+        });
+        $$("[data-delete-history]").forEach((button) => {
+          button.addEventListener("click", () => {
+            deleteHistoryItem(Number(button.dataset.deleteHistory));
+          });
+        });
+        $$("[data-history-page]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setHistoryPage(button.dataset.historyPage);
           });
         });
       }
@@ -1849,8 +1917,9 @@
           diffNotice: state.diffNotice,
           test: state.test,
         });
-        state.history = state.history.slice(0, 12);
-        localStorage.setItem("code-review-history", JSON.stringify(state.history));
+        state.history = state.history.slice(0, HISTORY_LIMIT);
+        state.historyPage = 0;
+        persistHistory();
       }
 
       function loadHistory() {
@@ -1863,8 +1932,29 @@
 
       function clearHistory() {
         state.history = [];
+        state.historyPage = 0;
         localStorage.removeItem("code-review-history");
         renderHistory();
+      }
+
+      function deleteHistoryItem(index) {
+        if (!Number.isInteger(index) || index < 0 || index >= state.history.length) return;
+        state.history.splice(index, 1);
+        const totalPages = Math.max(1, Math.ceil(state.history.length / HISTORY_PAGE_SIZE));
+        state.historyPage = Math.min(state.historyPage || 0, totalPages - 1);
+        persistHistory();
+        renderHistory();
+      }
+
+      function setHistoryPage(direction) {
+        const totalPages = Math.max(1, Math.ceil(state.history.length / HISTORY_PAGE_SIZE));
+        const current = state.historyPage || 0;
+        state.historyPage = direction === "prev" ? Math.max(0, current - 1) : Math.min(totalPages - 1, current + 1);
+        renderHistory();
+      }
+
+      function persistHistory() {
+        localStorage.setItem("code-review-history", JSON.stringify(state.history));
       }
 
       function buildReport() {

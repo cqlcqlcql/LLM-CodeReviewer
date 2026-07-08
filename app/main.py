@@ -16,9 +16,9 @@ from app.schemas import (
     TestRunRequest,
     TestRunResponse,
 )
-from app.services.code_loader import trim_code
+from app.services.code_loader import load_repository_code, trim_code
 from app.services.diff_loader import load_repository_diff, load_repository_unified_diff, parse_unified_diff
-from app.services.llm import build_reviewer
+from app.services.llm import _filter_review_issues, _has_logic_bug, _merge_new_issues, build_reviewer
 from app.services.static_analysis import run_static_analysis
 from app.services.test_runner import run_project_tests
 from app.settings import get_settings
@@ -53,6 +53,7 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     reviewer = build_reviewer(settings)
     if payload.repository_path:
         diff_context: str | None = None
+        source_context: str | None = None
         notices: list[str] = []
         static_issues: list[ReviewIssue] = []
         test_result: TestRunResponse | None = None
@@ -67,6 +68,16 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
             if not _can_continue_without_diff(exc):
                 raise
             notices.append(_diff_unavailable_notice(exc, payload.base_branch))
+            if _is_non_git_repository_error(exc):
+                try:
+                    source_context = load_repository_code(
+                        payload.repository_path,
+                        payload.language,
+                        settings.max_code_chars,
+                    )
+                except HTTPException as code_exc:
+                    if not _is_no_reviewable_code_error(code_exc):
+                        raise
 
         if payload.run_static_analysis:
             static_issues = run_static_analysis(payload.repository_path, payload.language)
@@ -80,12 +91,41 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
                 explain_failures=False,
             )
 
-        if diff_context is not None or static_issues or test_result is not None:
+        if source_context is not None:
+            response = await reviewer.review(payload.language, source_context)
+            if static_issues:
+                response.issues.extend(_merge_new_issues(response.issues, static_issues))
+            if test_result and test_result.test_status == "failed" and not _has_logic_bug(response.issues):
+                response.issues.append(
+                    ReviewIssue(
+                        file_path=None,
+                        source="pytest + LLM",
+                        severity="high",
+                        category="test_failure",
+                        line=None,
+                        message="Automated tests failed and need investigation.",
+                        suggestion="Use the first failing test and assertion in the log to locate the broken behavior.",
+                    )
+                )
+            response = _summarize_repository_response(response, test_result)
+            response = _filter_review_issues(
+                payload.language,
+                source_context,
+                response,
+                protect_tool_evidence=True,
+            )
+        elif diff_context is not None or static_issues or test_result is not None:
             response = await reviewer.review_repository(
                 payload.language,
                 diff_context,
                 static_issues,
                 test_result,
+            )
+            response = _filter_review_issues(
+                payload.language,
+                diff_context or "",
+                response,
+                protect_tool_evidence=True,
             )
         else:
             response = ReviewResponse(
@@ -101,7 +141,10 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     code = payload.code
     assert code is not None
 
-    return _force_direct_review_source(await reviewer.review(payload.language, trim_code(code, settings.max_code_chars)))
+    trimmed_code = trim_code(code, settings.max_code_chars)
+    response = await reviewer.review(payload.language, trimmed_code)
+    response = _filter_review_issues(payload.language, trimmed_code, response)
+    return _force_direct_review_source(response)
 
 
 @app.post("/api/review/file", response_model=ReviewResponse)
@@ -113,7 +156,10 @@ async def review_file(
     raw = await file.read()
     code = raw.decode("utf-8", errors="ignore")
     reviewer = build_reviewer(settings)
-    return _force_direct_review_source(await reviewer.review(language, trim_code(code, settings.max_code_chars)))
+    trimmed_code = trim_code(code, settings.max_code_chars)
+    response = await reviewer.review(language, trimmed_code)
+    response = _filter_review_issues(language, trimmed_code, response)
+    return _force_direct_review_source(response)
 
 
 @app.post("/api/test", response_model=TestRunResponse)
@@ -155,6 +201,10 @@ def _can_continue_without_diff(exc: HTTPException) -> bool:
     return _is_no_diff_error(exc) or _is_non_git_repository_error(exc)
 
 
+def _is_no_reviewable_code_error(exc: HTTPException) -> bool:
+    return exc.status_code == 400
+
+
 def _diff_unavailable_notice(exc: HTTPException, base_branch: str) -> str:
     if _is_no_diff_error(exc):
         return f"No diff found for {base_branch}...HEAD; skipped Git diff review."
@@ -164,4 +214,14 @@ def _diff_unavailable_notice(exc: HTTPException, base_branch: str) -> str:
 def _force_direct_review_source(response: ReviewResponse) -> ReviewResponse:
     for issue in response.issues:
         issue.source = "LLM"
+    return response
+
+
+def _summarize_repository_response(response: ReviewResponse, test_result: TestRunResponse | None) -> ReviewResponse:
+    if response.issues:
+        response.summary = f"Found {len(response.issues)} issue(s) from combined repository evidence."
+    elif test_result and test_result.test_status == "passed":
+        response.summary = "No review issues found. Automated tests passed."
+    else:
+        response.summary = "No review issues found."
     return response

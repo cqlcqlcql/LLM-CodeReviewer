@@ -11,7 +11,18 @@ LANGUAGE_EXTENSIONS = {
     "java": {".java"},
 }
 
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
+SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "tests",
+    "test",
+}
 
 
 def trim_code(code: str, max_chars: int) -> str:
@@ -35,6 +46,8 @@ def load_repository_code(repository_path: str, language: str, max_chars: int) ->
     total = 0
     for path in sorted(root.rglob("*")):
         if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if path.name.startswith("test_") or path.name.endswith("_test.py"):
             continue
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue

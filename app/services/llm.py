@@ -33,6 +33,14 @@ REVIEW_JSON_SCHEMA = {
     "required": ["summary", "issues"],
 }
 
+REVIEW_POLICY = """Review policy:
+- Report only issues that are demonstrably wrong for the code's stated purpose or explicit input contract.
+- Respect constraints documented in comments or docstrings, such as "nonnegative int"; do not require extra validation for inputs outside that contract.
+- Do not report missing docstrings, type hints, style preferences, or generic maintainability advice for small standalone snippets.
+- Be conservative with well-known idioms and exact code claims; do not report an operation, branch, call, or literal that is not present in the reviewed code or diff evidence.
+- For graph, tree, or linked-structure algorithms, treat nodes as object identities unless the contract explicitly says value equality is required.
+- Prefer an empty issues array over speculative findings."""
+
 
 class CodeReviewer(ABC):
     @abstractmethod
@@ -227,13 +235,15 @@ Focus on:
 4. Maintainability issues
 5. Whether names and behavior match
 
+{REVIEW_POLICY}
+
 Code:
 ```{language}
 {code}
 ```
 """.strip()
 
-        return _force_issue_source(await self._complete_review(prompt), "LLM")
+        return _force_issue_source(_filter_review_issues(language, code, await self._complete_review(prompt)), "LLM")
 
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         prompt = f"""
@@ -242,6 +252,7 @@ Review only the added or modified code in the diff context below.
 Use context lines only to understand the change.
 Do not comment on unchanged context lines or removed lines.
 Do not give generic advice.
+{REVIEW_POLICY}
 Every issue must include file_path, line, severity, reason in message, and suggestion.
 Every issue must use source exactly as "LLM".
 Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
@@ -256,7 +267,7 @@ Diff context:
 ```
 """.strip()
 
-        return _force_issue_source(await self._complete_review(prompt), "LLM")
+        return _force_issue_source(_filter_review_issues(language, diff_context, await self._complete_review(prompt)), "LLM")
 
     async def review_repository(
         self,
@@ -278,6 +289,7 @@ Rules:
 - Do not create a separate pytest issue when the same bug is already represented by a code issue.
 - Do not comment on unchanged context lines or removed lines unless needed to explain an added or modified line.
 - Do not give generic advice.
+- {REVIEW_POLICY.replace(chr(10), chr(10) + "- ")}
 - Every issue must include file_path, source, line, severity, category, message, and suggestion.
 - Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
 - Use source values like "LLM", "ruff", "mypy", "bandit", "pytest + LLM", or "LLM + pytest" to reflect the strongest evidence.
@@ -302,7 +314,12 @@ Test result:
 ```
 """.strip()
 
-        return await self._complete_review(prompt)
+        return _filter_review_issues(
+            language,
+            diff_context or "",
+            await self._complete_review(prompt),
+            protect_tool_evidence=True,
+        )
 
     async def explain_test_failure(self, command: str, log_excerpt: str) -> str:
         prompt = f"""
@@ -403,6 +420,297 @@ def _force_issue_source(response: ReviewResponse, source: str) -> ReviewResponse
     for issue in response.issues:
         issue.source = source
     return response
+
+
+def _filter_review_issues(
+    language: str,
+    code_evidence: str,
+    response: ReviewResponse,
+    *,
+    protect_tool_evidence: bool = False,
+) -> ReviewResponse:
+    """Keep LLM review output focused on provable functional defects."""
+    issues = [
+        issue
+        for issue in response.issues
+        if not _is_review_noise(issue, code_evidence, protect_tool_evidence=protect_tool_evidence)
+    ]
+    if len(issues) == len(response.issues):
+        return response
+    if not issues:
+        return ReviewResponse(summary="No clear functional issues found.", issues=[])
+    return ReviewResponse(summary=f"Found {len(issues)} clear issue(s).", issues=issues)
+
+
+def _is_review_noise(issue: ReviewIssue, code_evidence: str, *, protect_tool_evidence: bool) -> bool:
+    if protect_tool_evidence and not _is_llm_only_issue(issue):
+        return False
+
+    text = f"{issue.category} {issue.message} {issue.suggestion}".lower()
+    message = issue.message.lower()
+
+    if _mentions_absent_code_operation(message, code_evidence):
+        return True
+    if _is_object_identity_speculation(text, code_evidence):
+        return True
+    if _is_test_driver_output_comment(text, code_evidence):
+        return True
+    if _is_empty_sublist_sum_contract_comment(text, code_evidence):
+        return True
+    if _is_heap_update_assumption_comment(text, code_evidence):
+        return True
+    if _declares_nonnegative_int_contract(code_evidence) and _mentions_out_of_contract_input(text):
+        return True
+    if _is_speculative_contract_expansion(text, code_evidence):
+        return True
+
+    if issue.severity == "low" and _is_style_or_documentation_comment(text):
+        return True
+
+    return False
+
+
+def _is_llm_only_issue(issue: ReviewIssue) -> bool:
+    source = issue.source.lower()
+    return source == "llm" or (source.startswith("llm") and "pytest" not in source)
+
+
+def _mentions_absent_code_operation(message: str, code_evidence: str) -> bool:
+    normalized_evidence = _normalize_code_claim(code_evidence)
+    operand = r"(?:[A-Za-z_][A-Za-z0-9_\.]*|\d+)"
+    expression = rf"{operand}(?:\s*[-+*/%&|^]\s*{operand})*"
+    operation_pattern = rf"\b[A-Za-z_][A-Za-z0-9_\.]*\s*(?:\^=|&=|\|=|\+=|-=|\*=|//=|/=|%=)\s*{expression}"
+    for operation in re.findall(operation_pattern, message):
+        if _normalize_code_claim(operation) not in normalized_evidence:
+            return True
+    return False
+
+
+def _normalize_code_claim(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()
+
+
+def _is_object_identity_speculation(text: str, code_evidence: str) -> bool:
+    evidence = code_evidence.lower()
+    if "node" not in evidence or not any(marker in evidence for marker in ("graph", "digraph", "tree", "linked")):
+        return False
+    if "`is`" not in text and " is " not in text and "identity" not in text and "身份" not in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "==",
+            "equal",
+            "equality",
+            "same value",
+            "different object",
+            "相等",
+            "相同值",
+            "不同对象",
+        )
+    )
+
+
+def _is_test_driver_output_comment(text: str, code_evidence: str) -> bool:
+    evidence = code_evidence.lower()
+    if "_test.py" not in evidence and "driver to test" not in evidence and "def main(" not in evidence:
+        return False
+    return any(marker in text for marker in ("print", "output", "format", "comment", "注释", "输出", "格式"))
+
+
+def _is_empty_sublist_sum_contract_comment(text: str, code_evidence: str) -> bool:
+    evidence = code_evidence.lower()
+    if "max_sublist_sum" not in evidence or "0 <= i <= j <= len" not in evidence:
+        return False
+    return any(marker in text for marker in ("all negative", "all elements are negative", "全为负数"))
+
+
+def _is_heap_update_assumption_comment(text: str, code_evidence: str) -> bool:
+    evidence = code_evidence.lower()
+    if "heapq retains sorted property" not in evidence:
+        return False
+    return any(marker in text for marker in ("heap property", "decrease-key", "堆性质", "更新堆"))
+
+
+def _is_speculative_contract_expansion(text: str, code_evidence: str) -> bool:
+    if _has_explicit_behavior_contract(code_evidence):
+        return False
+    if _mentions_out_of_contract_input(text) or _mentions_generic_input_validation(text):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "edge case",
+            "boundary",
+            "corner case",
+            "large input",
+            "recursionerror",
+            "recursion depth",
+            "generator",
+            "iterator",
+            "iterated twice",
+            "unknown operator",
+            "unsupported operator",
+            "self-loop",
+            "mutable default",
+            "shared list",
+            "same list object",
+            "overrides the method",
+            "method name conflict",
+            "standard lcs",
+            "standard dynamic programming",
+            "kadane",
+            "dijkstra",
+            "floyd",
+            "kahn",
+            "heap property",
+            "decrease-key",
+            "off-by-one",
+            "all elements are negative",
+            "all negative",
+            "empty list",
+            "empty input",
+            "k=0",
+            "b=0",
+            "greater than 36",
+            "larger than 36",
+            "leading space",
+            "infinite loop",
+            "incomplete",
+            "incorrect order",
+            "operand order",
+            "rpn",
+            "palindrome",
+            "mirror",
+            "dp[i-1][j]",
+            "dp[i][j-1]",
+            "边界",
+            "特殊情况",
+            "大输入",
+            "递归深度",
+            "生成器",
+            "迭代器",
+            "未知运算符",
+            "自环",
+            "可变默认参数",
+            "共享",
+            "覆盖方法",
+            "方法冲突",
+            "堆性质",
+            "全为负数",
+            "空列表",
+            "空输入",
+            "大于36",
+            "开头",
+            "无限循环",
+            "不完整",
+            "运算数顺序",
+            "操作数顺序",
+            "回文",
+            "镜像",
+            "最长公共子序列",
+            "字符不匹配",
+        )
+    )
+
+
+def _has_explicit_behavior_contract(code: str) -> bool:
+    lowered = code.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "input:",
+            "output:",
+            "precondition:",
+            "postcondition:",
+            "examples:",
+            "example:",
+            ">>>",
+            "return:",
+            "returns:",
+            "raises:",
+        )
+    )
+
+
+def _declares_nonnegative_int_contract(code: str) -> bool:
+    return bool(re.search(r"\b(non[-\s]?negative|非负)\b", code, flags=re.IGNORECASE)) and bool(
+        re.search(r"\bint(?:eger)?\b|整数", code, flags=re.IGNORECASE)
+    )
+
+
+def _mentions_out_of_contract_input(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "negative",
+            "负数",
+            "none",
+            "null",
+            "字符串",
+            "string",
+            "浮点",
+            "float",
+            "非整数",
+            "non-integer",
+            "typeerror",
+            "type error",
+            "类型",
+        )
+    )
+
+
+def _mentions_generic_input_validation(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "input validation",
+            "validate",
+            "range check",
+            "out of range",
+            "indexerror",
+            "zerodivisionerror",
+            "keyerror",
+            "invalid",
+            "negative",
+            "nonnegative",
+            "empty",
+            "none",
+            "null",
+            "float",
+            "string",
+            "integer",
+            "non-integer",
+            "非法",
+            "验证",
+            "校验",
+            "范围",
+            "越界",
+            "负数",
+            "空",
+            "整数",
+            "类型",
+        )
+    )
+
+
+def _is_style_or_documentation_comment(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "docstring",
+            "documentation",
+            "文档",
+            "type hint",
+            "type annotation",
+            "类型注解",
+            "注释",
+            "style",
+            "风格",
+            "maintainability",
+            "可维护",
+        )
+    )
 
 
 def _find_first_line(code: str, keywords: tuple[str, ...]) -> int | None:

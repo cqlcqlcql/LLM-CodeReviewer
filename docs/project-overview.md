@@ -1,151 +1,145 @@
-# LLM-CodeReviewer 项目说明
+# LLM-CodeReviewer 项目总览
 
-这份文档用于后期重新理解项目，也可以作为 PPT 汇报的材料来源。它按“项目是什么、为什么这样做、怎么运行、内部模型是什么、技术栈和工具有哪些、每个模块负责什么、后续怎么扩展”的顺序展开。
+LLM-CodeReviewer 是一个本地代码评审 MVP。它把“代码从哪里来”“有哪些客观证据”“模型应该只基于哪些证据评审”“前端如何展示结果”拆成清晰链路，最终输出统一的 `ReviewResponse`。
 
-## 1. 项目定位
+项目当前支持三类入口：直接粘贴代码、上传单个文件、输入本地项目目录。本地项目目录又分为 Git 仓库和非 Git 目录：Git 仓库优先 review `base_branch...HEAD` 的变更；非 Git 目录不会伪造 diff，而是记录 notice，并继续利用静态分析、测试和可读取的源码上下文。
 
-LLM-CodeReviewer 是一个面向本地项目的代码评审 MVP。它不是一个通用聊天机器人，也不是一个单纯的静态检查器，而是一个把多种证据合并起来生成代码评审结论的小型系统。
-
-项目要验证的核心假设是：
-
-- LLM 适合做“综合判断”和“面向人的解释”。
-- Git diff 适合限定 review 范围，避免模型评论大量未修改代码。
-- 静态分析工具适合提供确定性证据，例如 lint、类型错误、安全风险。
-- 自动化测试适合提供运行时证据，例如某个改动是否破坏已有行为。
-- 后端应该先组织好上下文，再让模型总结，而不是只靠 prompt 让模型自己猜。
-
-因此，系统最终形成的评审链路是：
+## 1. 项目结构
 
 ```text
-代码文本 / 单文件
-  -> 后端读取文本
-  -> 交给 mock 或 DeepSeek reviewer
-  -> 生成结构化 JSON
-
-本地项目目录
-  -> 读取 Git diff
-  -> 运行静态分析
-  -> 可选运行测试
-  -> 汇总为统一证据包
-  -> 交给 mock 或 DeepSeek reviewer
-  -> 前端展示问题、证据、测试结果和报告
+code-reviewer-mvp/
+  app/
+    __init__.py
+    main.py                  # FastAPI 应用、路由和主流程编排
+    schemas.py               # ReviewRequest、ReviewResponse、ReviewIssue 等数据结构
+    settings.py              # LLM_PROVIDER、DeepSeek、MAX_CODE_CHARS 配置
+    services/
+      __init__.py
+      code_loader.py         # 非 Git 目录源码读取、扩展名过滤、测试目录跳过、裁剪
+      diff_loader.py         # git diff 执行、base branch 校验、unified diff 解析
+      llm.py                 # CodeReviewer 抽象、MockReviewer、DeepSeekReviewer
+      static_analysis.py     # ruff、mypy、bandit、npm run lint
+      test_runner.py         # pytest、npm test、mvn test、gradle test
+  frontend/
+    index.html               # 单页前端主界面
+    batch-test.html          # 批量测试辅助页面
+  docs/
+    phase1-guide.md          # 最小可用版本
+    phase2-diff-review.md    # Git diff review
+    phase3-automated-tests.md # 自动化测试接入
+    phase4-static-analysis.md # 静态分析接入
+    project-overview.md      # 当前总览
+  tests/
+    test_api.py              # API 行为测试
+  .env.example
+  pytest.ini
+  requirements.txt
 ```
 
-## 2. 项目目标
+模块职责可以概括为：
 
-### 2.1 功能目标
+| 层级 | 文件 | 职责 |
+| --- | --- | --- |
+| API 编排 | `app/main.py` | 接收请求、区分路径、组合 diff、静态分析、测试和 reviewer 输出 |
+| 数据契约 | `app/schemas.py` | 定义请求、响应、问题、diff、测试结果结构 |
+| 配置 | `app/settings.py` | 从 `.env` 读取 provider、DeepSeek 和长度限制 |
+| 代码读取 | `app/services/code_loader.py` | 读取非 Git 目录源码，过滤依赖目录、缓存目录和测试文件 |
+| Diff | `app/services/diff_loader.py` | 执行 `git diff <base_branch>...HEAD`，解析文件、hunk 和行号 |
+| LLM | `app/services/llm.py` | mock 规则、DeepSeek 调用、JSON 校验、问题过滤和去重 |
+| 工具证据 | `app/services/static_analysis.py` | 把本地工具输出转成 `ReviewIssue` |
+| 测试证据 | `app/services/test_runner.py` | 自动识别测试命令，返回 `TestRunResponse` |
+| 前端 | `frontend/index.html` | 任务配置、执行进度、结果、测试、报告和历史展示 |
 
-- 支持用户直接粘贴代码进行评审。
-- 支持上传单个代码文件进行评审，单文件路径直接把文件内容交给当前 reviewer。
-- 支持输入本地项目路径进行仓库级评审。
-- 仓库级评审以 Git diff 为主，只评审当前分支相对基础分支的改动。
-- 支持基础分支配置，避免硬编码 `main`。
-- 支持本地静态分析工具，把工具发现的问题合并到评审结果中。
-- 支持自动运行项目测试，把失败日志和失败数量纳入最终判断。
-- 支持在没有真实 LLM Key 的情况下用 mock reviewer 完整演示。
-- 支持切换 DeepSeek，用真实模型生成中文评审结果。
-- 前端提供任务配置、执行过程、结果展示、测试页、报告页和历史页。
+## 2. 完整逻辑流程图
 
-### 2.2 工程目标
+```mermaid
+flowchart TD
+    Start["用户在前端发起评审"] --> Input{"输入类型"}
 
-- 后端接口返回结构化 JSON，而不是让前端解析自然语言。
-- 用 Pydantic 模型约束请求和响应，保证前后端契约稳定。
-- 把 Git、测试、静态分析、LLM 调用拆成独立 service，便于逐步扩展。
-- 所有本地命令输出都按 UTF-8 读取并允许替换错误字符，降低 Windows 编码问题影响。
-- 对非 Git 目录、无 diff、缺少工具等情况做降级处理，不把“没有证据”误报成代码问题。
+    Input -->|粘贴代码| CodeText["POST /api/review<br/>payload.code"]
+    Input -->|上传单文件| FileUpload["POST /api/review/file<br/>UploadFile"]
+    Input -->|本地目录| RepoPath["POST /api/review<br/>repository_path"]
 
-## 3. 用户视角的使用流程
+    CodeText --> TrimCode["trim_code(MAX_CODE_CHARS)"]
+    FileUpload --> DecodeFile["读取 bytes 并按 UTF-8 解码"]
+    DecodeFile --> TrimCode
+    TrimCode --> DirectReview["reviewer.review(language, code)"]
+    DirectReview --> ForceLLM["问题 source 统一为 LLM"]
 
-### 3.1 代码片段评审
+    RepoPath --> ValidatePath["校验路径存在且是目录"]
+    ValidatePath --> IsGit{"目录包含 .git ?"}
 
-用户输入语言和代码文本，后端直接把裁剪后的代码交给 reviewer。
+    IsGit -->|是| GitDiff["git -c safe.directory=root<br/>diff base_branch...HEAD"]
+    GitDiff --> DiffOk{"有 diff ?"}
+    DiffOk -->|是| ParseDiff["parse_unified_diff"]
+    ParseDiff --> FormatDiff["format_diff_for_review<br/>FILE / HUNK / ADDED new_line"]
+    DiffOk -->|否| NoDiffNotice["notice: No diff found<br/>跳过 diff review"]
 
-适合场景：
+    IsGit -->|否| NonGitNotice["notice: Path is not a Git repository<br/>跳过 Git diff"]
+    NonGitNotice --> LoadSource["load_repository_code<br/>读取目录源码作为上下文"]
 
-- 快速演示 LLM 评审能力。
-- 检查一小段函数或算法。
-- 不需要 Git 上下文的简单代码问题。
+    FormatDiff --> StaticGate{"run_static_analysis ?"}
+    NoDiffNotice --> StaticGate
+    LoadSource --> StaticGate
 
-### 3.2 文件上传评审
+    StaticGate -->|是| StaticTools["ruff / mypy / bandit / npm run lint"]
+    StaticGate -->|否| TestGate{"run_tests ?"}
+    StaticTools --> ToolIssues["工具输出转换为 ReviewIssue[]"]
+    ToolIssues --> TestGate
 
-用户上传一个代码文件，后端按 UTF-8 读取内容并交给 reviewer。
+    TestGate -->|是| TestRunner["pytest / npm test / mvn test / gradle test"]
+    TestGate -->|否| RepoReview["review_repository"]
+    TestRunner --> TestResult["TestRunResponse<br/>status / command / failed_cases / log_excerpt"]
+    TestResult --> RepoReview
 
-这条链路不运行 Git diff、静态分析或自动化测试，因为上传文件没有仓库上下文、基础分支和测试目录。它的实际流程是：
+    RepoReview --> Merge["合并并去重<br/>LLM + 静态分析 + 测试证据"]
+    ForceLLM --> Response["ReviewResponse"]
+    Merge --> Response
 
-```text
-浏览器选择文件
-  -> multipart/form-data 上传到 POST /api/review/file
-  -> FastAPI 读取 UploadFile bytes
-  -> UTF-8 解码并按 MAX_CODE_CHARS 裁剪
-  -> reviewer.review(language, code)
-  -> 返回 ReviewResponse
+    Response --> Frontend["前端展示"]
+    Frontend --> Views["任务页 / 结果页 / 测试页 / 报告页 / 历史页"]
 ```
 
-如果 `.env` 中 `LLM_PROVIDER=mock`，文件内容只进入本地 mock reviewer；如果切换为 `LLM_PROVIDER=deepseek`，文件内容才会通过 DeepSeek 兼容接口发送给真实模型。
+三条核心分支：
 
-适合场景：
+| 路径 | 输入 | 主要证据 | 是否有 diff 行号 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| 单文件/代码文本 | 粘贴代码或上传文件 | 文件内容本身 | 通常没有 Git diff 行号，但 reviewer 或工具可给代码行号 | 快速检查一个独立片段或文件 |
+| Git 仓库 | 本地 Git 项目路径 | `base_branch...HEAD` diff、静态分析、测试 | 有。`ADDED new_line=<n>` 可追溯到新文件行号 | 评审当前分支相对基础分支的改动 |
+| 非 Git 目录 | 普通本地目录 | 目录源码、静态分析、测试 | 无 Git diff 行号 | 临时目录、解压项目、教学或演示代码 |
 
-- 临时检查一个独立文件。
-- 不想输入本地仓库路径。
+## 3. 技术栈
 
-### 3.3 本地项目评审
+| 类型 | 技术 |
+| --- | --- |
+| 后端框架 | FastAPI |
+| 数据模型 | Pydantic、pydantic-settings |
+| 服务运行 | Uvicorn |
+| LLM SDK | OpenAI Python SDK，使用 DeepSeek 兼容接口 |
+| 环境配置 | python-dotenv、`.env` |
+| 文件上传 | python-multipart |
+| 测试 | pytest、httpx |
+| 静态分析 | ruff、mypy、bandit、npm lint |
+| 前端 | 原生 HTML/CSS/JavaScript 单页应用 |
+| 前端存储 | 浏览器 `localStorage` 保存历史摘要 |
+| Git 集成 | 本地 `git diff <base_branch>...HEAD` |
 
-用户输入本地项目路径、语言、基础分支，并选择是否运行静态分析和测试。
+## 4. 核心数据结构
 
-系统执行：
-
-1. 尝试读取 `git diff <base_branch>...HEAD`。
-2. 如果启用静态分析，运行可识别的本地工具。
-3. 如果启用测试，运行可识别的测试命令。
-4. 把所有证据交给 reviewer 合并。
-5. 返回 `summary`、`issues`、`notices`、`test_result`。
-
-这是项目最重要的路径，也是后续做 PPT 时最值得重点讲的流程。
-
-## 4. 系统模型
-
-这里的“项目模型”可以理解为系统内部如何把现实中的代码评审拆成对象、证据和流程。
-
-### 4.1 输入模型
-
-系统支持三类输入：
-
-| 输入类型 | 入口 | 核心字段 | 说明 |
-| --- | --- | --- | --- |
-| 代码文本 | `POST /api/review` | `language`, `code` | 直接评审一段代码 |
-| 文件上传 | `POST /api/review/file` | `language`, `file` | 直接评审上传文件内容，不运行 diff、静态分析或测试 |
-| 本地仓库 | `POST /api/review` | `language`, `repository_path`, `base_branch`, `run_tests`, `run_static_analysis` | 评审本地项目变更 |
-
-`ReviewRequest` 是最核心的请求模型：
+### 4.1 ReviewRequest
 
 ```text
-language: string
+language: string = "python"
 code: string | null
 repository_path: string | null
-base_branch: string, default main
-run_tests: boolean, default false
-run_static_analysis: boolean, default true
+base_branch: string = "main"
+run_tests: boolean = false
+run_static_analysis: boolean = true
 ```
 
-模型校验规则是：`code` 和 `repository_path` 至少要提供一个。
+`code` 和 `repository_path` 至少提供一个。`base_branch` 是可配置的，避免把所有仓库都硬编码为 `main`。
 
-### 4.2 证据模型
-
-仓库级评审会收集三类证据：
-
-| 证据 | 来源 | 作用 |
-| --- | --- | --- |
-| Git diff | `app/services/diff_loader.py` | 告诉 reviewer 哪些代码是本次真正修改的 |
-| 静态分析结果 | `app/services/static_analysis.py` | 提供确定性的 lint、类型、安全问题 |
-| 测试结果 | `app/services/test_runner.py` | 提供运行时行为证据 |
-
-这三类证据不是简单拼接到前端，而是在后端先统一成数据结构，再交给 reviewer 生成去重后的 `issues`。
-
-注意：这三类证据只属于“本地项目目录评审”。代码文本和单文件上传没有 Git 仓库上下文，所以不会生成 diff，也不会触发静态分析和测试。
-
-### 4.3 问题模型
-
-每个 review 问题都使用 `ReviewIssue`：
+### 4.2 ReviewIssue
 
 ```text
 file_path: string | null
@@ -157,19 +151,9 @@ message: string
 suggestion: string
 ```
 
-字段含义：
+`source` 用来说明问题来自哪里，例如 `LLM`、`ruff`、`mypy`、`bandit`、`pytest`、`pytest + LLM`。Git diff 路径下，`file_path` 和 `line` 通常来自 diff 解析后的新文件行号；静态分析路径下则来自工具输出。
 
-- `file_path`：问题所在文件。代码片段评审时可以为空。
-- `source`：问题来源，例如 `LLM`、`ruff`、`mypy`、`bandit`、`pytest + LLM`。
-- `severity`：严重程度。
-- `category`：问题类别或工具规则编号，例如 `logic_bug`、`F841`、`type_error`。
-- `line`：问题行号。工具或模型无法定位时可以为空。
-- `message`：问题说明。
-- `suggestion`：修复建议。
-
-### 4.4 响应模型
-
-`ReviewResponse`：
+### 4.3 ReviewResponse
 
 ```text
 summary: string
@@ -178,16 +162,15 @@ notices: string[]
 test_result: TestRunResponse | null
 ```
 
-`notices` 用于放“非问题”的状态提示，例如：
+`issues` 是真正的代码问题。`notices` 是流程状态，不应被当成缺陷，例如“当前目录不是 Git 仓库，已跳过 diff review”或“没有发现 base_branch...HEAD 的 diff”。
 
-- 当前路径不是 Git 仓库，已跳过 diff review。
-- 当前分支相对基础分支没有 diff，已跳过 Git diff review。
+### 4.4 TestRunRequest / TestRunResponse
 
-这很重要，因为“没有 diff”不是代码缺陷，不能塞进 `issues`。
-
-### 4.5 测试结果模型
-
-`TestRunResponse`：
+```text
+repository_path: string
+language: string | null
+timeout_seconds: integer = 60
+```
 
 ```text
 test_status: passed | failed | timeout | unsupported | error
@@ -197,347 +180,165 @@ log_excerpt: string
 llm_explanation: string | null
 ```
 
-测试结果既可以由 `POST /api/test` 单独返回，也可以嵌入仓库级 `POST /api/review` 的响应里。
+`failed_cases` 会从常见测试日志中提取，例如 `<n> failed`、`Tests run: ..., Failures: <n>`、`<n> failing`。如果无法识别失败数量，则返回 `null`。
 
-在仓库级 review 中，测试失败不会直接作为静态分析问题重复出现，而是作为 runtime evidence 交给 reviewer，尽量和 diff 问题合并。
-
-## 5. 后端架构
-
-后端是一个紧凑的 FastAPI 应用。
+### 4.5 DiffRequest / DiffResponse
 
 ```text
-app/main.py
-  -> 接收 HTTP 请求
-  -> 调用 diff_loader / static_analysis / test_runner
-  -> 构造 reviewer
-  -> 返回 Pydantic response
-
-app/services/diff_loader.py
-  -> 校验本地 Git 仓库
-  -> 执行 git diff <base_branch>...HEAD
-  -> 解析 unified diff
-  -> 格式化为 LLM 易读的 diff context
-
-app/services/static_analysis.py
-  -> 根据项目类型识别静态工具
-  -> 运行 ruff / mypy / bandit；JS/TS 项目可尝试 npm run lint
-  -> 解析工具输出为 ReviewIssue
-
-app/services/test_runner.py
-  -> 根据项目类型识别测试命令
-  -> 运行 pytest / npm test / mvn test / gradle test
-  -> 提取失败数量和日志摘要
-
-app/services/llm.py
-  -> 定义 CodeReviewer 抽象类
-  -> 实现 MockReviewer
-  -> 实现 DeepSeekReviewer
-  -> 约束 LLM 输出 JSON schema
+repository_path: string
+base_branch: string = "main"
 ```
 
-### 5.1 API 编排逻辑
+```text
+base_branch: string
+diff: string
+files: ChangedFileSummary[]
+```
 
-`POST /api/review` 是最核心接口。
+```text
+ChangedFileSummary:
+  path: string
+  additions: integer
+  deletions: integer
+  hunks: integer
+```
 
-当请求里有 `repository_path`：
+## 5. Mock 与 DeepSeek 调用
 
-1. 初始化 `diff_context`、`notices`、`static_issues`、`test_result`。
-2. 尝试读取 Git diff。
-3. 如果 diff 不可用但属于可降级情况，就记录 notice。
-4. 如果启用静态分析，就运行工具并收集 `ReviewIssue`。
-5. 如果启用测试，就运行项目测试。
-6. 如果有任何证据，就调用 `reviewer.review_repository(...)`。
-7. 把 notice 和 test_result 合并进最终响应。
+### MockReviewer
 
-当请求里没有 `repository_path`：
+mock reviewer 是默认模式，适合本地演示、自动化测试和没有 API Key 的环境。
 
-1. 读取 `code`。
-2. 按 `MAX_CODE_CHARS` 裁剪。
-3. 调用 `reviewer.review(...)`。
+它会稳定识别一些可复现问题：
 
-当请求走 `POST /api/review/file`：
+- Python `add` 函数返回 `a - b`。
+- 代码中出现 `TODO` 或 `FIXME`。
+- 仓库评审时合并静态分析、diff 和测试失败证据。
+- 当测试失败且还没有明确逻辑问题时，补充一条 `pytest + LLM` 的高危测试失败问题。
 
-1. 读取上传文件 bytes。
-2. 用 UTF-8 解码，无法识别的字符会被忽略。
-3. 按 `MAX_CODE_CHARS` 裁剪。
-4. 调用 `reviewer.review(language, code)`。
+mock 的价值是让项目在没有网络和真实模型的情况下仍能完整跑通。
 
-所以单文件上传和代码文本评审属于同一类“直接代码评审”，区别只是代码来源不同；它们不会进入 `review_repository(...)` 的三证据合并流程。
+### DeepSeekReviewer
 
-### 5.2 Git diff 模型
+DeepSeek reviewer 使用 OpenAI Python SDK 的兼容接口：
 
-系统执行：
+```text
+base_url = DEEPSEEK_BASE_URL
+model = DEEPSEEK_MODEL
+api_key = DEEPSEEK_API_KEY
+```
+
+启用方式：
+
+```env
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=你的 DeepSeek Key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
+
+DeepSeek 路径要求模型返回严格 JSON，并用 `ReviewResponse` 再校验一次。如果模型返回空内容、非 JSON、字段不符合契约，后端会返回 502。提示词里明确要求：只评审可证明的问题，优先返回空 `issues` 而不是猜测。
+
+## 6. Git diff 与行号追踪
+
+Git 项目路径使用：
 
 ```text
 git -c safe.directory=<root> -C <root> diff <base_branch>...HEAD
 ```
 
-这样做有几个原因：
+关键设计：
 
-- `base_branch...HEAD` 能表达“当前分支相对基础分支的变更”。
-- `safe.directory` 能减少 Windows / Git ownership 场景下的安全限制问题。
-- `base_branch` 做了正则校验，避免用户输入危险参数。
-- diff 输出统一按 UTF-8 解码，并使用 `errors="replace"`，避免中文 Windows 环境下默认编码导致异常。
+- `base_branch...HEAD` 表示当前分支相对基础分支的真实变更范围。
+- `base_branch` 来自请求参数，可用于 `main`、`master`、`develop` 等分支。
+- `safe.directory` 降低 Windows 本地仓库 ownership 限制带来的误报。
+- 子进程输出按 UTF-8 读取，并使用 `errors="replace"`，避免编码问题中断评审。
+- `base_branch` 会经过字符校验，拒绝空值、以 `-` 开头、包含 `..` 或非法字符的值。
 
-解析后的 diff 会变成类似下面的 LLM 上下文：
+unified diff 会被解析为文件、hunk 和行：
 
 ```text
 FILE: calculator.py
-HUNK: @@ -1,2 +1,5 @@
-CONTEXT old_line=1 new_line=1: def subtract(a, b):
-CONTEXT old_line=2 new_line=2:     return a - b
-ADDED new_line=4: def add(a, b):
-ADDED new_line=5:     return a - b
+HUNK: @@ -1,2 +1,2 @@
+CONTEXT old_line=1 new_line=1: def add(a, b):
+ADDED new_line=2:     return a - b
+REMOVED old_line=2:     return a + b
 ```
 
-这个格式的重点是让 reviewer 明确：
+这让 reviewer 可以遵守两个约束：
 
-- 哪些行是新增或修改行。
-- 每个 changed line 在新文件中的行号。
-- context 只是辅助理解，不应该被单独评论。
+- 只评审 `ADDED` 或修改后的代码行。
+- `CONTEXT` 和 `REMOVED` 只用于理解上下文，不作为直接问题来源。
 
-### 5.3 静态分析模型
+最终问题的 `file_path` 和 `line` 可以落到具体变更文件和新文件行号上，前端也能围绕这些位置展示证据片段。
 
-当前识别逻辑：
+## 7. 静态分析与测试证据
 
-| 项目类型 | 触发条件 | 工具 |
+静态分析输出会直接转成 `ReviewIssue`：
+
+| 工具 | 触发 | 严重程度映射 |
 | --- | --- | --- |
-| Python | `language=python`，或存在 `pytest.ini`、`pyproject.toml`、`requirements.txt`、`tests/test_*.py` 等 | `ruff`、`mypy`、`bandit` |
-| JavaScript/TypeScript | `language=javascript/typescript`，或存在 `package.json` | 尝试 `npm run lint`；如果没有 lint script 会跳过 |
+| ruff | Python 项目或 `language=python` | `low` |
+| mypy | Python 项目或 `language=python` | `medium` |
+| bandit | Python 项目或 `language=python` | 按 Bandit severity 映射 |
+| npm run lint | 存在 `package.json` 或 JS/TS 语言 | `medium` 的 lint failure |
 
-静态分析结果会被转换成统一的 `ReviewIssue`。例如 `ruff` 的 `F841` 会变成：
-
-```json
-{
-  "source": "ruff",
-  "file_path": "calculator.py",
-  "severity": "low",
-  "category": "F841",
-  "line": 2,
-  "message": "Local variable `unused` is assigned to but never used.",
-  "suggestion": "Remove the unused variable."
-}
-```
-
-如果工具没有安装，或者 npm 项目没有 lint script，系统会跳过，不把缺工具当作代码问题。当前本项目自己的 `frontend/` 是单文件静态页面，没有 `package.json`，所以它本身没有 `npm run lint`。
-
-### 5.4 自动化测试模型
+如果工具未安装、没有对应 npm script，系统会跳过工具，不把“工具缺失”当成代码问题。
 
 测试命令识别：
 
 | 项目类型 | 触发条件 | 命令 |
 | --- | --- | --- |
-| Python | Python 语言或 Python 项目标记 | `python -m pytest` |
-| JavaScript/TypeScript | JS/TS 语言或 `package.json` | `npm test` |
-| Java Maven | `pom.xml` | `mvn test` |
-| Java Gradle | `build.gradle`、`build.gradle.kts`、`gradlew` | `gradle test` 或 wrapper |
+| Python | `language=python`，或存在 `pytest.ini`、`pyproject.toml`、`setup.py`、`requirements.txt`、测试文件 | `python -m pytest` |
+| JavaScript/TypeScript | `language=javascript/typescript/js/ts`，或存在 `package.json` | `npm test` |
+| Java Maven | 存在 `pom.xml` | `mvn test` |
+| Java Gradle | 存在 `build.gradle`、`build.gradle.kts`、`gradlew` | `gradle test` |
 
-测试状态：
+测试失败时，`/api/test` 默认会调用 reviewer 解释失败日志；仓库级 `/api/review` 为了避免重复解释，当前传入 `explain_failures=false`，但仍会把 `test_result` 嵌入最终响应。
 
-- `passed`：命令退出码为 0。
-- `failed`：命令能运行，但测试失败。
-- `timeout`：超过超时时间。
-- `unsupported`：没有识别到支持的测试命令。
-- `error`：测试命令无法启动。
+## 8. 总体评分机制
 
-`POST /api/test` 会在测试失败时调用 reviewer 解释日志。仓库级 `POST /api/review` 则把测试结果作为最终综合评审的证据，不单独生成一段测试解释，避免重复。
+评分目前由前端 `scoreReview(issues, test)` 计算，只影响展示，不改变后端 API 数据。
 
-## 6. LLM 评审模型
+| 分数 | 触发条件 | 含义 |
+| --- | --- | --- |
+| A | 没有问题，且测试没有失败 | 当前证据下未发现明确问题 |
+| A- | 有问题，但只有低危问题 | 有轻量改进项 |
+| B | 至少一个中危问题，且没有高危问题或测试失败 | 存在需要修复的中等风险 |
+| C | 至少一个高危问题，或 `test_status=failed` | 存在高风险问题，或自动化测试失败 |
+| D | 当前未使用 | 可作为后续严重阻断状态扩展 |
 
-`app/services/llm.py` 定义了统一抽象：
+这套机制有意保持简单：高危和测试失败优先级最高；中危次之；低危不会把项目压到 `B` 或 `C`。
 
-```text
-CodeReviewer
-  review(language, code)
-  review_diff(language, diff_context)
-  review_repository(language, diff_context, static_issues, test_result)
-  explain_test_failure(command, log_excerpt)
-```
+## 9. 前端界面速览
 
-### 6.1 MockReviewer
+`frontend/index.html` 是一个原生单页应用，主要分为五个视图：
 
-mock reviewer 是本项目非常重要的工程设计，因为它让系统不依赖 API Key 也能完整演示和测试。
-
-当前 mock 行为包括：
-
-- 识别 Python 中 `def add(...): return a-b` 这种函数名与行为不一致的问题。
-- 识别 `TODO` / `FIXME`。
-- 在 diff review 中只关注 changed line。
-- 合并静态分析问题和测试失败问题。
-- 没有问题时返回空 `issues` 数组。
-
-### 6.2 DeepSeekReviewer
-
-DeepSeek reviewer 使用 `openai.AsyncOpenAI`，但把 `base_url` 配置为 DeepSeek 兼容接口。
-
-关键约束：
-
-- 使用 `response_format={"type": "json_object"}` 要求模型返回 JSON。
-- 用 Pydantic 的 `ReviewResponse.model_validate(...)` 再验证一次。
-- prompt 明确要求只评论新增或修改代码。
-- 用户可见的 summary、message、suggestion 使用简体中文。
-- 代码标识符、文件名、函数名、测试名、字面值保持原文。
-
-### 6.3 为什么要用结构化 JSON
-
-如果 LLM 只返回自然语言，前端很难稳定展示，也很难区分问题来源、严重程度、文件位置和修复建议。
-
-结构化 JSON 的好处：
-
-- 前端可以直接渲染卡片。
-- 测试可以断言字段。
-- 后续可以导出报告、做统计、做过滤。
-- 工具结果和 LLM 结果可以共享同一个问题模型。
-
-## 7. 前端架构
-
-前端是 `frontend/index.html` 单文件静态应用，不需要 React/Vue 构建链。
-
-它包含：
-
-- 侧边栏导航。
-- 创建任务页。
-- 任务执行进度页。
-- 结果页。
-- 测试页。
-- 报告页。
-- 历史页。
-
-前端主要职责：
-
-- 收集用户输入的项目目录、语言、基础分支、是否运行静态分析和测试。
-- 收集用户上传的单个代码文件。
-- 调用 `/api/review`、`/api/review/file`、`/api/diff`、`/api/test`。
-- 展示 diff 文件摘要和增删行。
-- 展示 review issue 卡片。
-- 展示测试日志和测试诊断。
-- 生成 Markdown 报告。
-- 使用 `localStorage` 保存最近的 review 历史。
-
-前端当前仍是 MVP 形态：优点是部署简单，缺点是文件较大、状态管理集中在一个 HTML 文件中。后续如果继续扩展，可以拆成 React 或 Vue 项目。
-
-## 8. 技术栈
-
-### 8.1 后端
-
-| 技术 | 用途 |
+| 视图 | 内容 |
 | --- | --- |
-| Python | 后端主语言 |
-| FastAPI | HTTP API 框架 |
-| Pydantic | 请求/响应模型校验 |
-| pydantic-settings | `.env` 配置读取 |
-| python-dotenv | 加载环境变量 |
-| OpenAI Python SDK | 通过兼容接口调用 DeepSeek |
-| Uvicorn | 本地 ASGI 服务 |
-| python-multipart | 支持文件上传接口 |
+| 任务页 | 输入本地目录、base branch、语言，选择是否运行静态分析和测试，也支持上传单文件 |
+| 结果页 | 展示评分、问题数、证据来源、测试状态、diff 摘要和问题卡片 |
+| 测试页 | 展示测试命令、状态、失败用例数量、日志摘要和 LLM 诊断 |
+| 报告页 | 生成 Markdown 报告，支持下载和浏览器打印 |
+| 历史页 | 通过 `localStorage` 保存最近评审摘要，支持翻页、载入、删除和清空 |
 
-### 8.2 LLM
+结果页会额外做几件产品化处理：
 
-| 模式 | 用途 |
-| --- | --- |
-| `LLM_PROVIDER=mock` | 本地演示、自动化测试、无 API Key 场景 |
-| `LLM_PROVIDER=deepseek` | 调用真实 DeepSeek 模型 |
-| `DEEPSEEK_MODEL=deepseek-v4-flash` | 默认模型配置 |
+- 对 Git diff 生成文件级摘要，而不是只显示原始 diff。
+- 对问题卡片展示来源、严重程度、文件行号、建议和可用证据。
+- 对测试失败补充测试日志定位和失败用例诊断。
+- 对无 diff 或非 Git 目录展示 notice，避免用户误以为评审失败。
+- 报告页把评分、配置、问题、测试和 notice 汇总为可复制的 Markdown。
 
-### 8.3 本地分析与测试工具
+## 10. API 清单
 
-| 工具 | 用途 |
-| --- | --- |
-| Git | 读取 `base_branch...HEAD` diff |
-| pytest | Python 自动化测试 |
-| ruff | Python lint |
-| mypy | Python 类型检查 |
-| bandit | Python 安全扫描 |
-| npm test | JS/TS 项目测试 |
-| npm run lint | 被评审的 JS/TS 项目 lint；当前本仓库前端没有 package.json，因此本仓库自身不会运行该命令 |
-| Maven | Java 项目测试 |
-| Gradle | Java 项目测试 |
+### 健康检查
 
-### 8.4 前端
-
-| 技术 | 用途 |
-| --- | --- |
-| HTML | 页面结构 |
-| CSS | 布局、卡片、状态颜色、响应式样式 |
-| 原生 JavaScript | API 调用、状态管理、渲染和报告生成 |
-| localStorage | 保存最近 review 历史 |
-
-### 8.5 测试与开发
-
-| 工具 | 用途 |
-| --- | --- |
-| pytest | 后端测试运行器 |
-| FastAPI TestClient | API 行为测试 |
-| httpx | TestClient 依赖 |
-| `.venv` | 项目本地 Python 虚拟环境 |
-
-## 9. 工具列表
-
-### 9.1 运行项目需要的命令
-
-```powershell
-cd D:\profile\code-reviewer-mvp
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload
+```http
+GET /api/health
 ```
 
-### 9.2 安装依赖
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-### 9.3 运行测试
-
-```powershell
-D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
-```
-
-### 9.4 典型 API 调试
-
-健康检查：
-
-```bash
-curl http://127.0.0.1:8000/api/health
-```
-
-仓库评审：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/review \
-  -H "Content-Type: application/json" \
-  -d "{\"language\":\"python\",\"repository_path\":\"D:\\profile\\diff-test-project\",\"base_branch\":\"main\",\"run_static_analysis\":true,\"run_tests\":true}"
-```
-
-单独查看 diff：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/diff \
-  -H "Content-Type: application/json" \
-  -d "{\"repository_path\":\"D:\\profile\\diff-test-project\",\"base_branch\":\"main\"}"
-```
-
-单独运行测试：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/test \
-  -H "Content-Type: application/json" \
-  -d "{\"repository_path\":\"D:\\profile\\diff-test-project\",\"language\":\"python\",\"timeout_seconds\":60}"
-```
-
-## 10. API 详解
-
-### 10.1 `GET /`
-
-返回前端页面 `frontend/index.html`。
-
-### 10.2 `GET /api/health`
-
-返回服务状态和当前 reviewer provider。
-
-示例：
+返回：
 
 ```json
 {
@@ -546,20 +347,22 @@ curl -X POST http://127.0.0.1:8000/api/test \
 }
 ```
 
-### 10.3 `POST /api/review`
+### 代码文本或仓库评审
 
-最重要的 review 接口。
+```http
+POST /api/review
+```
 
-代码文本评审请求：
+代码文本：
 
 ```json
 {
   "language": "python",
-  "code": "def add(a,b): return a-b"
+  "code": "def add(a, b):\n    return a - b"
 }
 ```
 
-仓库评审请求：
+Git 仓库：
 
 ```json
 {
@@ -571,57 +374,25 @@ curl -X POST http://127.0.0.1:8000/api/test \
 }
 ```
 
-仓库评审响应：
+### 单文件上传
 
-```json
-{
-  "summary": "Found 1 issue(s) from combined repository evidence.",
-  "issues": [
-    {
-      "file_path": "calculator.py",
-      "source": "LLM",
-      "severity": "high",
-      "category": "logic_bug",
-      "line": 4,
-      "message": "add function returns subtraction on a changed line.",
-      "suggestion": "Change the added return expression from a-b to a+b."
-    }
-  ],
-  "notices": [],
-  "test_result": null
-}
+```http
+POST /api/review/file
+Content-Type: multipart/form-data
 ```
-
-### 10.4 `POST /api/review/file`
-
-上传单个文件进行评审，使用 `multipart/form-data`。
 
 字段：
 
-- `language`
-- `file`
-
-示例：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/review/file \
-  -F "language=python" \
-  -F "file=@calculator.py"
-```
-
-处理逻辑：
-
 ```text
-UploadFile -> UTF-8 文本 -> trim_code -> reviewer.review
+language: python
+file: 上传的代码文件
 ```
 
-这条接口不会运行 Git diff、静态分析或自动化测试。是否真的发给 DeepSeek 取决于 `LLM_PROVIDER`：默认 `mock` 不会调用外部模型，`deepseek` 才会调用真实模型。
+### Diff 预览
 
-### 10.5 `POST /api/diff`
-
-读取本地仓库 diff。
-
-请求：
+```http
+POST /api/diff
+```
 
 ```json
 {
@@ -630,28 +401,11 @@ UploadFile -> UTF-8 文本 -> trim_code -> reviewer.review
 }
 ```
 
-响应：
+### 单独运行测试
 
-```json
-{
-  "base_branch": "main",
-  "diff": "...",
-  "files": [
-    {
-      "path": "calculator.py",
-      "additions": 1,
-      "deletions": 1,
-      "hunks": 1
-    }
-  ]
-}
+```http
+POST /api/test
 ```
-
-### 10.6 `POST /api/test`
-
-单独运行项目测试。
-
-请求：
 
 ```json
 {
@@ -661,297 +415,31 @@ UploadFile -> UTF-8 文本 -> trim_code -> reviewer.review
 }
 ```
 
-响应：
+## 11. 常见状态解释
 
-```json
-{
-  "test_status": "failed",
-  "command": "pytest",
-  "failed_cases": 1,
-  "log_excerpt": "...",
-  "llm_explanation": "..."
-}
-```
+| 状态 | 含义 | 处理 |
+| --- | --- | --- |
+| 没有 diff | 当前分支相对基础分支没有变更 | 记录 notice，不生成 issue |
+| 非 Git 仓库 | 目录没有 `.git` | 跳过 diff，继续使用目录源码、静态分析和测试 |
+| 工具未安装 | ruff、mypy、bandit、npm 等不存在 | 跳过该工具，不生成 issue |
+| 测试命令无法识别 | 没有识别到支持的项目类型 | 返回 `unsupported` |
+| 测试超时 | 命令超过 `timeout_seconds` | 返回 `timeout` 并保留日志摘要 |
+| DeepSeek 返回非 JSON | 模型输出不符合契约 | 后端返回 502 |
 
-## 11. 阶段演进
+## 12. 当前验证方式
 
-### 11.1 Phase 1：最小可用版本
-
-目标是先跑通从用户输入到 LLM JSON 输出再到前端展示的闭环。
-
-实现内容：
-
-- FastAPI 服务。
-- `/api/review`。
-- `/api/review/file`。
-- mock reviewer。
-- DeepSeek reviewer。
-- Pydantic 响应模型。
-- 单文件前端。
-- 基础 API 测试。
-
-### 11.2 Phase 2：Git diff review
-
-问题背景：直接读取整个仓库会让模型评论很多没改过的代码，review 范围不清晰。
-
-改进：
-
-- 引入 `base_branch`。
-- 使用 `git diff <base_branch>...HEAD`。
-- 解析 unified diff。
-- prompt 明确要求只评审新增或修改代码。
-- 没有真实问题时返回空 `issues`。
-
-### 11.3 Phase 3：自动化测试
-
-问题背景：代码表面看起来没问题，但测试失败能提供更强的运行时证据。
-
-改进：
-
-- 新增 `/api/test`。
-- 识别 Python、JS/TS、Java 测试命令。
-- 返回测试状态、命令、失败数量、日志摘要。
-- 仓库级 review 可以通过 `run_tests: true` 把测试结果纳入综合评审。
-
-### 11.4 Phase 4：静态分析
-
-问题背景：LLM 的判断不稳定，很多 lint、类型、安全问题应该让确定性工具先发现。
-
-改进：
-
-- Python 项目运行 `ruff`、`mypy`、`bandit`。
-- JS/TS 项目在存在 npm lint script 时运行 `npm run lint`。
-- 工具输出统一转换成 `ReviewIssue`。
-- 最终 review 合并 diff、静态分析、测试三类证据。
-- 静态分析默认开启。
-
-## 12. 关键设计取舍
-
-### 12.1 为什么默认 mock
-
-mock 模式保证项目在没有 API Key、没有网络、模型不可用时仍然能演示、测试和开发。
-
-这对 MVP 很关键，因为前后端、数据模型、工具执行、错误处理都可以独立于真实模型验证。
-
-### 12.2 为什么只 review diff
-
-真实代码评审通常关注“本次改动引入了什么风险”。如果把整个仓库交给模型，模型可能会：
-
-- 评论历史遗留问题。
-- 忽略本次修改重点。
-- 消耗更多 token。
-- 生成大量泛泛建议。
-
-所以仓库级 review 以 diff 为主。
-
-### 12.3 为什么静态分析默认开启
-
-静态工具的输出更确定，适合发现格式、类型、安全等基础问题。LLM 更适合做综合判断和解释。
-
-默认开启静态分析可以让 review 结果更可靠，同时工具缺失时会自动跳过，避免影响基本流程。
-
-### 12.4 为什么测试在仓库 review 中不直接生成解释
-
-单独 `/api/test` 的目标是“解释测试失败”，所以可以返回 `llm_explanation`。
-
-仓库级 `/api/review` 的目标是“生成最终问题列表”。如果测试失败和 diff 指向同一个 bug，应该合并成一个问题，而不是同时展示一个代码问题和一个重复的测试问题。
-
-## 13. 异常与降级策略
-
-| 场景 | 处理方式 |
-| --- | --- |
-| `repository_path` 不存在 | 返回 400 |
-| `repository_path` 不是目录 | 返回 400 |
-| 不是 Git 仓库 | 跳过 diff，记录 notice，继续静态分析和测试 |
-| 没有 diff | 跳过 diff，记录 notice，继续静态分析和测试 |
-| `base_branch` 非法 | 返回 400 |
-| Git 命令超时 | 返回 408 |
-| 静态工具未安装 | 跳过该工具 |
-| npm 没有 lint script | 跳过 `npm run lint` |
-| 没有识别到测试命令 | 返回 `unsupported` |
-| 测试超时 | 返回 `timeout` |
-| DeepSeek 返回非 JSON | 返回 502 |
-
-## 14. 测试覆盖
-
-当前 `tests/test_api.py` 覆盖了这些核心行为：
-
-- mock reviewer 能识别 `add` 函数返回减法的问题。
-- 仓库 review 使用用户配置的 `base_branch`。
-- diff context 能正确定位新增函数后的问题行。
-- `/api/diff` 返回文件摘要和 unified diff。
-- 非法 `base_branch` 会被拒绝。
-- `/api/test` 能识别 Python 测试失败。
-- 仓库 review 可以包含测试结果。
-- 静态分析问题可以合并进 review response。
-- 没有 diff 时仍然可以运行静态分析。
-- 非 Git 目录也可以运行静态分析和测试。
-- 静态分析不会把 pytest 失败当作 lint 问题。
-- 仓库 review 中测试失败不会暴露 diff 不可用文本为问题。
-- `/api/review` 必须有 `code` 或 `repository_path`。
-
-推荐验证命令：
+推荐使用项目虚拟环境运行测试：
 
 ```powershell
 D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
 ```
 
-## 15. PPT 可用提纲
+测试会强制走 `LLM_PROVIDER=mock`，确保本地、CI 或无网络环境下也能稳定验证。
 
-### 第 1 页：项目标题
+## 13. 后续可扩展方向
 
-标题：LLM-CodeReviewer：基于 LLM 的本地代码评审 MVP
-
-一句话介绍：把 Git diff、静态分析、自动化测试和大模型合并成结构化代码评审结果。
-
-### 第 2 页：为什么做这个项目
-
-可讲要点：
-
-- 普通 LLM 直接 review 整个仓库范围太大。
-- 人工 code review 需要关注本次变更、测试结果和工具信号。
-- 项目尝试让 LLM 不再“凭空看代码”，而是基于明确证据做总结。
-
-### 第 3 页：整体架构
-
-可画流程：
-
-```text
-Frontend
-  -> FastAPI
-  -> Git diff / Static tools / Test runner
-  -> Reviewer abstraction
-  -> Mock or DeepSeek
-  -> Structured JSON
-  -> UI cards and report
-```
-
-### 第 4 页：核心数据模型
-
-重点展示：
-
-- `ReviewRequest`
-- `ReviewIssue`
-- `ReviewResponse`
-- `TestRunResponse`
-
-强调：所有输出都结构化，前端不解析自然语言。
-
-### 第 5 页：Diff Review
-
-重点展示：
-
-- `git diff <base_branch>...HEAD`
-- 只 review changed lines。
-- context lines 只做理解辅助。
-- 支持 `main`、`master`、`develop`。
-
-### 第 6 页：静态分析
-
-重点展示：
-
-- `ruff`
-- `mypy`
-- `bandit`
-- `npm run lint`
-- 工具结果统一转换成 `ReviewIssue`。
-
-### 第 7 页：自动化测试
-
-重点展示：
-
-- `pytest`
-- `npm test`
-- `mvn test`
-- `gradle test`
-- 测试失败作为 runtime evidence，并入最终 review。
-
-### 第 8 页：LLM 设计
-
-重点展示：
-
-- `CodeReviewer` 抽象。
-- `MockReviewer` 保证无 Key 可运行。
-- `DeepSeekReviewer` 使用 OpenAI SDK 兼容接口。
-- JSON schema + Pydantic 双重约束。
-
-### 第 9 页：前端展示
-
-重点展示：
-
-- 任务配置。
-- 执行进度。
-- diff 摘要。
-- issue 卡片。
-- 测试日志。
-- Markdown 报告。
-- 历史记录。
-
-### 第 10 页：项目亮点
-
-可讲要点：
-
-- 不是只写 prompt，而是先构建可靠上下文。
-- 支持无模型环境下完整测试。
-- 使用确定性工具增强 LLM 判断。
-- 对非 Git 目录、无 diff、缺少工具等情况有降级处理。
-- 数据模型清晰，便于后续扩展。
-
-### 第 11 页：不足与后续优化
-
-可讲要点：
-
-- 前端还是单文件，后续可拆 React/Vue。
-- 当前只支持少量语言和工具。
-- 还没有持久化数据库。
-- 没有接 GitHub PR 评论。
-- 没有用户体系和权限控制。
-- LLM 输出质量依赖模型能力和 prompt。
-- 可加入报告导出、历史对比、CI 集成、PR bot。
-
-## 16. 后续扩展方向
-
-### 16.1 产品功能
-
-- 接入 GitHub Pull Request，自动读取 PR diff。
-- 支持把 review 结果评论回 PR。
-- 增加项目历史记录数据库。
-- 增加报告导出为 PDF。
-- 增加 review 严重程度过滤和按文件筛选。
-- 增加规则配置，例如忽略某些路径或工具规则。
-
-### 16.2 工程能力
-
-- 前端拆成组件化工程。
-- 后端增加任务队列，避免长时间测试阻塞请求。
-- 增加缓存，避免重复运行相同 diff 的工具。
-- 增加更细粒度的日志和审计。
-- 增加 Docker 部署。
-- 增加 OpenAPI 文档示例。
-
-### 16.3 模型能力
-
-- 支持更多模型 provider。
-- 针对不同语言使用不同 review prompt。
-- 对 LLM 输出做更强的 schema 约束。
-- 增加“证据引用”，让每个问题都能回到 diff 行、工具输出或测试日志。
-- 增加自动修复建议 patch。
-
-## 17. 重新理解项目时的阅读顺序
-
-建议以后回顾时按这个顺序看：
-
-1. 先读外层 `README.md`，快速恢复项目用途和运行方式。
-2. 再读本文件，理解系统模型和整体架构。
-3. 看 `app/schemas.py`，掌握请求响应契约。
-4. 看 `app/main.py`，理解 API 编排。
-5. 看 `app/services/diff_loader.py`，理解 diff review。
-6. 看 `app/services/static_analysis.py`，理解工具结果如何转成 issue。
-7. 看 `app/services/test_runner.py`，理解测试执行。
-8. 看 `app/services/llm.py`，理解 mock 和 DeepSeek reviewer。
-9. 看 `tests/test_api.py`，确认哪些行为已经被测试固定。
-10. 最后看 `frontend/index.html`，理解用户界面如何消费 API。
-
-## 18. 一句话总结
-
-LLM-CodeReviewer 的价值不在于“让模型随便看一段代码”，而在于用工程化方式把 diff、静态分析和测试结果组织成清晰证据，再让 LLM 生成结构化、可展示、可测试、可扩展的代码评审结果。
+- 把评分逻辑从前端迁移到后端，让 API、报告和 UI 使用同一分数来源。
+- 增加 `D` 档，用于更严重的阻断状态，例如模型输出不可用、测试基础设施异常或多个高危安全问题。
+- 对 `pytest collected 0 items` 单独标记为 `unsupported` 或 `no_tests`。
+- 给非 Git 目录增加更明确的“目录扫描评审”模式。
+- 增加报告 PDF 导出、历史持久化、GitHub PR bot 或 CI 集成。
