@@ -13,7 +13,7 @@ Supported tool detection:
 | Python | `ruff check .` | `ruff` |
 | Python | `mypy .` | `mypy` |
 | Python | `bandit -r .` | `bandit` |
-| JavaScript/TypeScript | `npm run lint` | `npm` |
+| JavaScript/TypeScript | tries `npm run lint` when a JS/TS project is detected | `npm` |
 
 Repository review enables static analysis by default:
 
@@ -27,7 +27,9 @@ Repository review enables static analysis by default:
 ```
 
 The backend skips tools that are not installed or npm scripts that do not exist,
-so missing optional tooling does not create fake review issues. Static tools
+so missing optional tooling does not create fake review issues. This repository's
+own frontend is a single static `index.html` and has no `package.json`, so it
+does not currently provide an npm lint script. Static tools
 exclude common virtual environment, cache, and temporary directories by default.
 Bandit also skips its `assert` rule, which avoids noisy test-style warnings in
 the merged review. Tools that run and fail are converted into normal review

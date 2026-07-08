@@ -220,7 +220,7 @@ app/services/diff_loader.py
 
 app/services/static_analysis.py
   -> 根据项目类型识别静态工具
-  -> 运行 ruff / mypy / bandit / npm run lint
+  -> 运行 ruff / mypy / bandit；JS/TS 项目可尝试 npm run lint
   -> 解析工具输出为 ReviewIssue
 
 app/services/test_runner.py
@@ -303,7 +303,7 @@ ADDED new_line=5:     return a - b
 | 项目类型 | 触发条件 | 工具 |
 | --- | --- | --- |
 | Python | `language=python`，或存在 `pytest.ini`、`pyproject.toml`、`requirements.txt`、`tests/test_*.py` 等 | `ruff`、`mypy`、`bandit` |
-| JavaScript/TypeScript | `language=javascript/typescript`，或存在 `package.json` | `npm run lint` |
+| JavaScript/TypeScript | `language=javascript/typescript`，或存在 `package.json` | 尝试 `npm run lint`；如果没有 lint script 会跳过 |
 
 静态分析结果会被转换成统一的 `ReviewIssue`。例如 `ruff` 的 `F841` 会变成：
 
@@ -319,7 +319,7 @@ ADDED new_line=5:     return a - b
 }
 ```
 
-如果工具没有安装，或者 npm 项目没有 lint script，系统会跳过，不把缺工具当作代码问题。
+如果工具没有安装，或者 npm 项目没有 lint script，系统会跳过，不把缺工具当作代码问题。当前本项目自己的 `frontend/` 是单文件静态页面，没有 `package.json`，所以它本身没有 `npm run lint`。
 
 ### 5.4 自动化测试模型
 
@@ -449,7 +449,7 @@ DeepSeek reviewer 使用 `openai.AsyncOpenAI`，但把 `base_url` 配置为 Deep
 | mypy | Python 类型检查 |
 | bandit | Python 安全扫描 |
 | npm test | JS/TS 项目测试 |
-| npm run lint | JS/TS 项目 lint |
+| npm run lint | 被评审的 JS/TS 项目 lint；当前本仓库前端没有 package.json，因此本仓库自身不会运行该命令 |
 | Maven | Java 项目测试 |
 | Gradle | Java 项目测试 |
 
@@ -720,7 +720,7 @@ UploadFile -> UTF-8 文本 -> trim_code -> reviewer.review
 改进：
 
 - Python 项目运行 `ruff`、`mypy`、`bandit`。
-- JS/TS 项目运行 `npm run lint`。
+- JS/TS 项目在存在 npm lint script 时运行 `npm run lint`。
 - 工具输出统一转换成 `ReviewIssue`。
 - 最终 review 合并 diff、静态分析、测试三类证据。
 - 静态分析默认开启。

@@ -21,7 +21,7 @@ LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 A
 - `POST /api/test`：自动识别并运行项目测试。
 - 支持 configurable base branch，例如 `main`、`master`、`develop`。
 - 支持 Python、JavaScript/TypeScript、Java 的测试命令识别。
-- 支持 Python 静态分析工具 `ruff`、`mypy`、`bandit`，以及前端项目的 `npm run lint`。
+- 支持 Python 静态分析工具 `ruff`、`mypy`、`bandit`；对被评审的 JavaScript/TypeScript 项目，如果存在 `package.json` 或选择 JS/TS 语言，会尝试 `npm run lint`。
 - 默认使用 `LLM_PROVIDER=mock`，没有 API Key 也能跑通完整流程。
 - 可切换 DeepSeek，使用 OpenAI SDK 兼容接口调用真实模型。
 
@@ -37,7 +37,7 @@ code-reviewer-mvp/
       code_loader.py         # 代码读取与长度裁剪
       diff_loader.py         # Git diff 读取、解析和格式化
       llm.py                 # mock / DeepSeek reviewer
-      static_analysis.py     # ruff、mypy、bandit、npm lint
+      static_analysis.py     # ruff、mypy、bandit；JS/TS 项目可尝试 npm lint
       test_runner.py         # pytest、npm test、mvn/gradle test
   frontend/
     index.html               # 静态前端页面
