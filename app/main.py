@@ -101,7 +101,7 @@ async def review_code(payload: ReviewRequest) -> ReviewResponse:
     code = payload.code
     assert code is not None
 
-    return await reviewer.review(payload.language, trim_code(code, settings.max_code_chars))
+    return _force_direct_review_source(await reviewer.review(payload.language, trim_code(code, settings.max_code_chars)))
 
 
 @app.post("/api/review/file", response_model=ReviewResponse)
@@ -113,7 +113,7 @@ async def review_file(
     raw = await file.read()
     code = raw.decode("utf-8", errors="ignore")
     reviewer = build_reviewer(settings)
-    return await reviewer.review(language, trim_code(code, settings.max_code_chars))
+    return _force_direct_review_source(await reviewer.review(language, trim_code(code, settings.max_code_chars)))
 
 
 @app.post("/api/test", response_model=TestRunResponse)
@@ -159,3 +159,9 @@ def _diff_unavailable_notice(exc: HTTPException, base_branch: str) -> str:
     if _is_no_diff_error(exc):
         return f"No diff found for {base_branch}...HEAD; skipped Git diff review."
     return "Path is not a Git repository; skipped Git diff review."
+
+
+def _force_direct_review_source(response: ReviewResponse) -> ReviewResponse:
+    for issue in response.issues:
+        issue.source = "LLM"
+    return response

@@ -216,6 +216,8 @@ class DeepSeekReviewer(CodeReviewer):
     async def review(self, language: str, code: str) -> ReviewResponse:
         prompt = f"""
 Please act as a careful code review assistant and inspect the following {language} code.
+Every issue must use source exactly as "LLM".
+Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
 Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
 
 Focus on:
@@ -231,7 +233,7 @@ Code:
 ```
 """.strip()
 
-        return await self._complete_review(prompt)
+        return _force_issue_source(await self._complete_review(prompt), "LLM")
 
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         prompt = f"""
@@ -241,6 +243,7 @@ Use context lines only to understand the change.
 Do not comment on unchanged context lines or removed lines.
 Do not give generic advice.
 Every issue must include file_path, line, severity, reason in message, and suggestion.
+Every issue must use source exactly as "LLM".
 Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
 If there are no real issues, return an empty issues array.
 Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
@@ -253,7 +256,7 @@ Diff context:
 ```
 """.strip()
 
-        return await self._complete_review(prompt)
+        return _force_issue_source(await self._complete_review(prompt), "LLM")
 
     async def review_repository(
         self,
@@ -394,6 +397,12 @@ def _issue_key(issue: ReviewIssue) -> tuple[str | None, int | None, str]:
 
 def _has_logic_bug(issues: list[ReviewIssue]) -> bool:
     return any(issue.category in {"logic_bug", "test_failure"} for issue in issues)
+
+
+def _force_issue_source(response: ReviewResponse, source: str) -> ReviewResponse:
+    for issue in response.issues:
+        issue.source = source
+    return response
 
 
 def _find_first_line(code: str, keywords: tuple[str, ...]) -> int | None:

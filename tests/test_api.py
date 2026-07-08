@@ -320,6 +320,36 @@ def test_static_analysis_does_not_merge_pytest_failures(tmp_path):
     assert all(issue.source != "pytest" for issue in issues)
 
 
+def test_review_file_normalizes_direct_review_source(monkeypatch):
+    class FakeReviewer:
+        async def review(self, language, code):
+            return main_module.ReviewResponse(
+                summary="Found one issue.",
+                issues=[
+                    ReviewIssue(
+                        file_path=None,
+                        source="test_name_that_should_not_be_a_source",
+                        severity="low",
+                        category="logic",
+                        line=1,
+                        message="Example issue.",
+                        suggestion="Example suggestion.",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FakeReviewer())
+
+    response = client.post(
+        "/api/review/file",
+        data={"language": "python"},
+        files={"file": ("example.py", b"def example():\n    return 1\n", "text/x-python")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["issues"][0]["source"] == "LLM"
+
+
 def test_review_non_git_repository_summarizes_test_failure_without_diff_text(tmp_path):
     (tmp_path / "test_failure.py").write_text(
         "def test_failure():\n    assert False\n",

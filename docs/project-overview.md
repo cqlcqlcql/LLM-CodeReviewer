@@ -17,12 +17,17 @@ LLM-CodeReviewer 是一个面向本地项目的代码评审 MVP。它不是一�
 因此，系统最终形成的评审链路是：
 
 ```text
-用户输入本地项目目录
+代码文本 / 单文件
+  -> 后端读取文本
+  -> 交给 mock 或 DeepSeek reviewer
+  -> 生成结构化 JSON
+
+本地项目目录
   -> 读取 Git diff
   -> 运行静态分析
   -> 可选运行测试
   -> 汇总为统一证据包
-  -> mock 或 DeepSeek 评审器生成结构化 JSON
+  -> 交给 mock 或 DeepSeek reviewer
   -> 前端展示问题、证据、测试结果和报告
 ```
 
@@ -31,7 +36,7 @@ LLM-CodeReviewer 是一个面向本地项目的代码评审 MVP。它不是一�
 ### 2.1 功能目标
 
 - 支持用户直接粘贴代码进行评审。
-- 支持上传单个代码文件进行评审。
+- 支持上传单个代码文件进行评审，单文件路径直接把文件内容交给当前 reviewer。
 - 支持输入本地项目路径进行仓库级评审。
 - 仓库级评审以 Git diff 为主，只评审当前分支相对基础分支的改动。
 - 支持基础分支配置，避免硬编码 `main`。
@@ -65,6 +70,19 @@ LLM-CodeReviewer 是一个面向本地项目的代码评审 MVP。它不是一�
 
 用户上传一个代码文件，后端按 UTF-8 读取内容并交给 reviewer。
 
+这条链路不运行 Git diff、静态分析或自动化测试，因为上传文件没有仓库上下文、基础分支和测试目录。它的实际流程是：
+
+```text
+浏览器选择文件
+  -> multipart/form-data 上传到 POST /api/review/file
+  -> FastAPI 读取 UploadFile bytes
+  -> UTF-8 解码并按 MAX_CODE_CHARS 裁剪
+  -> reviewer.review(language, code)
+  -> 返回 ReviewResponse
+```
+
+如果 `.env` 中 `LLM_PROVIDER=mock`，文件内容只进入本地 mock reviewer；如果切换为 `LLM_PROVIDER=deepseek`，文件内容才会通过 DeepSeek 兼容接口发送给真实模型。
+
 适合场景：
 
 - 临时检查一个独立文件。
@@ -95,7 +113,7 @@ LLM-CodeReviewer 是一个面向本地项目的代码评审 MVP。它不是一�
 | 输入类型 | 入口 | 核心字段 | 说明 |
 | --- | --- | --- | --- |
 | 代码文本 | `POST /api/review` | `language`, `code` | 直接评审一段代码 |
-| 文件上传 | `POST /api/review/file` | `language`, `file` | 评审上传文件 |
+| 文件上传 | `POST /api/review/file` | `language`, `file` | 直接评审上传文件内容，不运行 diff、静态分析或测试 |
 | 本地仓库 | `POST /api/review` | `language`, `repository_path`, `base_branch`, `run_tests`, `run_static_analysis` | 评审本地项目变更 |
 
 `ReviewRequest` 是最核心的请求模型：
@@ -122,6 +140,8 @@ run_static_analysis: boolean, default true
 | 测试结果 | `app/services/test_runner.py` | 提供运行时行为证据 |
 
 这三类证据不是简单拼接到前端，而是在后端先统一成数据结构，再交给 reviewer 生成去重后的 `issues`。
+
+注意：这三类证据只属于“本地项目目录评审”。代码文本和单文件上传没有 Git 仓库上下文，所以不会生成 diff，也不会触发静态分析和测试。
 
 ### 4.3 问题模型
 
@@ -234,6 +254,15 @@ app/services/llm.py
 1. 读取 `code`。
 2. 按 `MAX_CODE_CHARS` 裁剪。
 3. 调用 `reviewer.review(...)`。
+
+当请求走 `POST /api/review/file`：
+
+1. 读取上传文件 bytes。
+2. 用 UTF-8 解码，无法识别的字符会被忽略。
+3. 按 `MAX_CODE_CHARS` 裁剪。
+4. 调用 `reviewer.review(language, code)`。
+
+所以单文件上传和代码文本评审属于同一类“直接代码评审”，区别只是代码来源不同；它们不会进入 `review_repository(...)` 的三证据合并流程。
 
 ### 5.2 Git diff 模型
 
@@ -377,7 +406,8 @@ DeepSeek reviewer 使用 `openai.AsyncOpenAI`，但把 `base_url` 配置为 Deep
 前端主要职责：
 
 - 收集用户输入的项目目录、语言、基础分支、是否运行静态分析和测试。
-- 调用 `/api/review`、`/api/diff`、`/api/test`。
+- 收集用户上传的单个代码文件。
+- 调用 `/api/review`、`/api/review/file`、`/api/diff`、`/api/test`。
 - 展示 diff 文件摘要和增删行。
 - 展示 review issue 卡片。
 - 展示测试日志和测试诊断。
@@ -570,6 +600,22 @@ curl -X POST http://127.0.0.1:8000/api/test \
 
 - `language`
 - `file`
+
+示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/review/file \
+  -F "language=python" \
+  -F "file=@calculator.py"
+```
+
+处理逻辑：
+
+```text
+UploadFile -> UTF-8 文本 -> trim_code -> reviewer.review
+```
+
+这条接口不会运行 Git diff、静态分析或自动化测试。是否真的发给 DeepSeek 取决于 `LLM_PROVIDER`：默认 `mock` 不会调用外部模型，`deepseek` 才会调用真实模型。
 
 ### 10.5 `POST /api/diff`
 

@@ -187,6 +187,7 @@
         display: block;
         margin-top: 4px;
         font-size: 20px;
+        overflow-wrap: anywhere;
       }
 
       .grid.two {
@@ -862,7 +863,7 @@
         <div class="topbar">
           <div>
             <h1 id="page-title">创建评审任务</h1>
-            <p class="subtitle" id="page-subtitle">选择本地项目目录，运行 diff 评审、静态分析和测试。</p>
+            <p class="subtitle" id="page-subtitle">选择本地项目目录，或上传单个代码文件进行评审。</p>
           </div>
           <span class="badge" id="provider">后端未连接</span>
         </div>
@@ -890,6 +891,9 @@
               <label for="repo">本地项目目录</label>
               <input id="repo" placeholder="D:\profile\diff-test-project" />
 
+              <label for="review-file">单个代码文件</label>
+              <input id="review-file" type="file" />
+
               <div class="checks">
                 <label class="check" for="run-static">
                   <input id="run-static" type="checkbox" checked />
@@ -903,17 +907,18 @@
 
               <div class="actions">
                 <button class="primary" id="start-review" type="button">开始评审</button>
+                <button class="secondary" id="review-file-only" type="button">评审单文件</button>
                 <button class="secondary" id="run-tests-only" type="button">只运行测试</button>
               </div>
             </div>
 
             <div class="panel">
               <h2>当前能力</h2>
-              <p class="subtitle">当前后端仍以目录为入口：收集项目上下文和本地工具结果，最后交给 LLM 综合分析。</p>
+              <p class="subtitle">当前后端支持目录和单文件入口：目录会收集 diff、工具和测试结果，单文件会直接交给 LLM 评审。</p>
               <div class="status-strip" style="grid-template-columns: 1fr 1fr; margin-top: 14px">
                 <div class="metric">
                   <span>输入</span>
-                  <strong>目录</strong>
+                  <strong>目录 / 文件</strong>
                 </div>
                 <div class="metric">
                   <span>分析</span>
@@ -944,7 +949,7 @@
             <div class="metric"><span>总体评分</span><strong id="score">-</strong></div>
             <div class="metric"><span>问题数量</span><strong id="issue-count">0</strong></div>
             <div class="metric"><span>测试状态</span><strong id="test-status">未运行</strong></div>
-            <div class="metric"><span>评审来源</span><strong id="source-count">-</strong></div>
+            <div class="metric"><span>问题来源</span><strong id="source-count">-</strong></div>
           </div>
 
           <div class="result-grid" id="result-grid">
@@ -1012,7 +1017,7 @@
       };
 
       const views = {
-        create: ["创建评审任务", "选择本地项目目录，运行 diff 评审、静态分析和测试。"],
+        create: ["创建评审任务", "选择本地项目目录，或上传单个代码文件进行评审。"],
         task: ["运行进度", "查看 diff、工具、LLM 和测试的执行状态。"],
         result: ["评审结果", "左侧对照代码 diff，右侧查看结构化问题卡片。"],
         test: ["测试页", "查看测试命令、通过或失败状态，以及日志摘要。"],
@@ -1027,6 +1032,7 @@
         button.addEventListener("click", () => setView(button.dataset.view));
       });
       $("#start-review").addEventListener("click", runReview);
+      $("#review-file-only").addEventListener("click", runFileReview);
       $("#run-tests-only").addEventListener("click", runTestsOnly);
       $("#export-from-result").addEventListener("click", () => setView("report"));
       $("#download-md").addEventListener("click", downloadMarkdown);
@@ -1138,12 +1144,63 @@
         }
       }
 
+      async function runFileReview() {
+        const file = $("#review-file").files?.[0];
+        if (!file) {
+          showError("请选择要评审的代码文件。");
+          return;
+        }
+
+        const config = {
+          language: $("#language").value,
+          repository_path: file.name,
+          base_branch: "single file",
+          run_static_analysis: false,
+          run_tests: false,
+        };
+
+        state.review = null;
+        state.diff = null;
+        state.diffNotice = `单文件评审：${file.name}`;
+        state.test = null;
+        state.task = createFileTask(file);
+        setView("task");
+        setBusy(true);
+        markStep("review", "running");
+        renderAll();
+
+        try {
+          state.review = await requestFileReview(file, config.language);
+          markStep("review", "done");
+          saveRun(config);
+          setView("result");
+        } catch (error) {
+          markStep("review", "failed", error.message);
+          showError(error.message);
+        } finally {
+          setBusy(false);
+          renderAll();
+        }
+      }
+
       async function requestReview(config) {
         return readJson(
           await fetch("/api/review", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(config),
+          }),
+        );
+      }
+
+      async function requestFileReview(file, language) {
+        const formData = new FormData();
+        formData.append("language", language);
+        formData.append("file", file);
+        return readJson(
+          await fetch("/api/review/file", {
+            method: "POST",
+            body: formData,
           }),
         );
       }
@@ -1214,6 +1271,20 @@
           { id: "review", label: "LLM 综合分析", status: "pending", detail: "最后汇总 diff、工具和测试结果" },
         ];
         return { config, steps };
+      }
+
+      function createFileTask(file) {
+        return {
+          config: { repository_path: file.name, language: $("#language").value },
+          steps: [
+            {
+              id: "review",
+              label: "单文件 LLM 评审",
+              status: "pending",
+              detail: file.name,
+            },
+          ],
+        };
       }
 
       function markStep(id, status, detail) {
@@ -1872,6 +1943,7 @@
 
       function setBusy(isBusy) {
         $("#start-review").disabled = isBusy;
+        $("#review-file-only").disabled = isBusy;
         $("#run-tests-only").disabled = isBusy;
       }
 
@@ -1884,7 +1956,8 @@
 
       function summarizeSources(issues) {
         const sources = new Set(issues.map((issue) => issue.source || "LLM"));
-        return sources.size ? Array.from(sources).join(" + ") : "-";
+        const summary = sources.size ? Array.from(sources).join(" + ") : "-";
+        return summary.length > 42 ? `${summary.slice(0, 39)}...` : summary;
       }
 
       function formatSeverity(value) {

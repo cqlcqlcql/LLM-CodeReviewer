@@ -4,18 +4,19 @@ LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 A
 
 这个项目的核心目标不是训练模型，而是验证一条可落地的代码评审链路：
 
-1. 选择一段代码、一个文件，或一个本地项目目录。
-2. 后端收集代码上下文，优先读取 `git diff <base_branch>...HEAD`。
-3. 对项目运行本地静态分析工具，必要时运行自动化测试。
-4. 把 diff、静态工具结果、测试结果交给 mock reviewer 或 DeepSeek reviewer 汇总。
-5. 前端展示问题列表、diff 摘要、测试诊断、历史记录和 Markdown 报告。
+1. 选择一段代码、上传一个文件，或输入一个本地项目目录。
+2. 如果是代码文本或单文件，后端直接读取文本并交给 reviewer。
+3. 如果是本地项目目录，后端优先读取 `git diff <base_branch>...HEAD`。
+4. 对项目目录运行本地静态分析工具，必要时运行自动化测试。
+5. 把代码文本、单文件内容，或 diff + 工具 + 测试证据交给 mock reviewer 或 DeepSeek reviewer 汇总。
+6. 前端展示问题列表、diff 摘要、测试诊断、历史记录和 Markdown 报告。
 
 更详细的项目复盘、模型说明、技术栈、工具列表和 PPT 素材见 [docs/project-overview.md](docs/project-overview.md)。
 
 ## 当前能力
 
 - `POST /api/review`：评审代码文本或本地项目目录。
-- `POST /api/review/file`：上传单个代码文件并评审。
+- `POST /api/review/file`：上传单个代码文件并评审；该路径不运行 diff、静态分析或测试，而是直接把文件内容交给当前 reviewer。
 - `POST /api/diff`：读取本地 Git 仓库的统一 diff，并返回文件级摘要。
 - `POST /api/test`：自动识别并运行项目测试。
 - 支持 configurable base branch，例如 `main`、`master`、`develop`。
@@ -109,6 +110,16 @@ curl -X POST http://127.0.0.1:8000/api/review \
   -H "Content-Type: application/json" \
   -d "{\"language\":\"python\",\"code\":\"def add(a,b): return a-b\"}"
 ```
+
+上传单个文件评审：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/review/file \
+  -F "language=python" \
+  -F "file=@calculator.py"
+```
+
+单文件评审会读取上传文件内容，并调用当前 reviewer。默认 `LLM_PROVIDER=mock` 时走本地 mock；切到 `LLM_PROVIDER=deepseek` 后才会把文件内容发送给 DeepSeek。
 
 评审本地仓库改动并运行测试：
 
