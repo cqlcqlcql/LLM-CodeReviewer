@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -11,7 +10,6 @@ load_dotenv()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    llm_provider: Literal["mock", "deepseek"] = Field(default="mock", alias="LLM_PROVIDER")
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
     deepseek_model: str = Field(default="deepseek-v4-flash", alias="DEEPSEEK_MODEL")

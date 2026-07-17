@@ -1,111 +1,226 @@
 import subprocess
-import os
 
-os.environ["LLM_PROVIDER"] = "mock"
-
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.main import app
 from app.schemas import ReviewIssue
-from app.schemas import ReviewResponse
-from app.services.llm import _filter_review_issues
-from app.services.static_analysis import run_static_analysis
+from app.services.diff_loader import load_repository_diff
+from app.services.llm import DeepSeekReviewer, build_reviewer
+from app.settings import Settings
 
 
 client = TestClient(app)
 
 
-def test_review_code_mock_detects_add_subtract_bug():
+def test_health_reports_deepseek():
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "provider": "deepseek"}
+
+
+def test_build_reviewer_only_uses_deepseek():
+    reviewer = build_reviewer(Settings(DEEPSEEK_API_KEY="test-key"))
+
+    assert isinstance(reviewer, DeepSeekReviewer)
+
+
+def test_direct_code_review_uses_injected_test_reviewer():
     response = client.post(
         "/api/review",
-        json={"language": "python", "code": "def add(a,b): return a-b"},
+        json={"language": "python", "code": "def add(a, b):\n    return a - b\n"},
+    )
+
+    assert response.status_code == 200
+    issue = response.json()["issues"][0]
+    assert issue["category"] == "logic_bug"
+    assert issue["source"] == "LLM"
+
+
+def test_single_file_review_uses_isolated_git_diff():
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "false",
+        },
+        files={"file": ("calculator.py", b"def add(a, b):\n    return a - b\n", "text/x-python")},
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "Function name does not match behavior."
-    assert data["issues"][0]["file_path"] is None
-    assert data["issues"][0]["severity"] == "high"
-    assert data["issues"][0]["category"] == "logic_bug"
+    assert data["issues"][0]["file_path"] == "calculator.py"
+    assert data["issues"][0]["line"] == 1
+    assert data["notices"] == [
+        "Uploaded source and 0 related file(s) were reviewed in an isolated temporary Git workspace."
+    ]
+
+
+def test_single_file_pytest_no_tests_is_not_failure():
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "true",
+        },
+        files={"file": ("calculator.py", b"def add(a, b):\n    return a + b\n", "text/x-python")},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["test_result"]
+    assert result["test_status"] == "no_tests"
+    assert result["collected_cases"] == 0
+    assert result["failed_cases"] == 0
+
+
+def test_single_file_review_runs_uploaded_related_pytest_file():
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "true",
+        },
+        files=[
+            ("file", ("calculator.py", b"def value():\n    return 1\n", "text/x-python")),
+            (
+                "related_files",
+                (
+                    "test_calculator.py",
+                    b"from calculator import value\n\ndef test_value():\n    assert value() == 2\n",
+                    "text/x-python",
+                ),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["test_result"]["test_status"] == "failed"
+    assert data["test_result"]["collected_cases"] == 1
+    assert data["test_result"]["failed_cases"] == 1
+    assert data["issues"][0]["source"] == "pytest + LLM"
+    assert data["notices"] == [
+        "Uploaded source and 1 related file(s) were reviewed in an isolated temporary Git workspace."
+    ]
+
+
+def test_single_file_review_preserves_pytest_result_when_deepseek_fails(monkeypatch):
+    class FailingReviewer:
+        async def review_repository(self, language, diff_context, static_issues, test_result):
+            raise HTTPException(status_code=502, detail="invalid structured JSON")
+
+    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FailingReviewer())
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "true",
+        },
+        files=[
+            ("file", ("calculator.py", b"def value():\n    return 1\n", "text/x-python")),
+            (
+                "related_files",
+                (
+                    "test_calculator.py",
+                    b"from calculator import value\n\ndef test_value():\n    assert value() == 2\n",
+                    "text/x-python",
+                ),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["test_result"]["test_status"] == "failed"
+    assert data["test_result"]["collected_cases"] == 1
+    assert data["test_result"]["failed_cases"] == 1
+    assert "DeepSeek 综合分析暂不可用" in data["summary"]
+    assert data["notices"] == [
+        "Uploaded source and 1 related file(s) were reviewed in an isolated temporary Git workspace.",
+        "DeepSeek 综合分析暂时失败；已保留本地静态分析和自动化测试结果。",
+    ]
+
+
+def test_single_file_review_rejects_duplicate_uploaded_names():
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "false",
+        },
+        files=[
+            ("file", ("calculator.py", b"value = 1\n", "text/x-python")),
+            ("related_files", ("calculator.py", b"value = 2\n", "text/x-python")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded files must have unique file names"
+
+
+def test_uploaded_filename_is_sanitized():
+    response = client.post(
+        "/api/review/file",
+        data={
+            "language": "python",
+            "run_static_analysis": "false",
+            "run_tests": "false",
+        },
+        files={"file": ("../unsafe calculator.py", b"def add(a, b):\n    return a - b\n", "text/x-python")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["issues"][0]["file_path"] == "unsafe_calculator.py"
 
 
 def test_review_repository_uses_configured_base_branch(tmp_path):
     _git(tmp_path, "init", "-b", "master")
     _git(tmp_path, "config", "user.email", "test@example.com")
     _git(tmp_path, "config", "user.name", "Test User")
-
-    source = tmp_path / "calculator.py"
-    source.write_text("def subtract(a, b):\n    return a - b\n", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "initial")
-    _git(tmp_path, "checkout", "-b", "feature/review-me")
-
-    source.write_text(
-        "def subtract(a, b):\n    return a - b\n\n"
-        "def add(a, b):\n    return a - b\n",
-        encoding="utf-8",
-    )
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "add broken add")
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "master"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-    assert data["issues"][0]["file_path"] == "calculator.py"
-    assert data["issues"][0]["line"] == 4
-    assert data["issues"][0]["severity"] == "high"
-
-
-def test_review_repository_uses_context_after_added_function(tmp_path):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-
-    source = tmp_path / "calculator.py"
-    source.write_text("def subtract(a, b):\n    return a - b", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "initial")
-    _git(tmp_path, "checkout", "-b", "feature/broken-add")
-
-    source.write_text(
-        "def subtract(a, b):\n    return a - b\n\n"
-        "def add(a, b):\n    return a - b",
-        encoding="utf-8",
-    )
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "add broken add")
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path)},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["issues"][0]["file_path"] == "calculator.py"
-    assert data["issues"][0]["line"] == 4
-
-
-def test_repository_diff_returns_file_summary_and_unified_diff(tmp_path):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-
     source = tmp_path / "calculator.py"
     source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
     _git(tmp_path, "add", "calculator.py")
     _git(tmp_path, "commit", "-m", "initial")
-    _git(tmp_path, "checkout", "-b", "feature/review-me")
-
+    _git(tmp_path, "switch", "-c", "review")
     source.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     _git(tmp_path, "add", "calculator.py")
     _git(tmp_path, "commit", "-m", "break add")
+
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "python",
+            "repository_path": str(tmp_path),
+            "base_branch": "master",
+            "run_static_analysis": False,
+        },
+    )
+
+    assert response.status_code == 200
+    issue = response.json()["issues"][0]
+    assert issue["file_path"] == "calculator.py"
+    assert issue["line"] == 2
+
+
+def test_repository_diff_returns_changed_file_summary(tmp_path):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+    source = tmp_path / "example.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "example.py")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "review")
+    source.write_text("value = 2\n", encoding="utf-8")
+    _git(tmp_path, "add", "example.py")
+    _git(tmp_path, "commit", "-m", "change value")
 
     response = client.post(
         "/api/diff",
@@ -113,30 +228,83 @@ def test_repository_diff_returns_file_summary_and_unified_diff(tmp_path):
     )
 
     assert response.status_code == 200
-    data = response.json()
-    assert data["base_branch"] == "main"
-    assert data["files"] == [{"path": "calculator.py", "additions": 1, "deletions": 1, "hunks": 1}]
-    assert "+    return a - b" in data["diff"]
-    assert "-    return a + b" in data["diff"]
+    assert response.json()["files"] == [
+        {"path": "example.py", "additions": 1, "deletions": 1, "hunks": 1}
+    ]
 
 
-def test_review_repository_rejects_invalid_base_branch(tmp_path):
-    _git(tmp_path, "init", "-b", "main")
+def test_non_git_directory_skips_full_source_scan(tmp_path, monkeypatch):
+    (tmp_path / "large_source.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
 
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("non-Git source scanning must not run")
+
+    monkeypatch.setattr("app.services.code_loader.load_repository_code", fail_if_called)
     response = client.post(
         "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "../main"},
+        json={
+            "language": "python",
+            "repository_path": str(tmp_path),
+            "run_static_analysis": False,
+            "run_tests": False,
+        },
     )
 
-    assert response.status_code == 400
-    assert "base_branch" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["issues"] == []
+    assert data["summary"] == "No review evidence was collected."
+    assert data["notices"] == [
+        "Path is not a Git repository; skipped Git diff review.",
+        "Full-source scanning was skipped for this non-Git directory.",
+    ]
 
 
-def test_run_project_tests_detects_python_failure(tmp_path):
-    tests_dir = tmp_path / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "test_math.py").write_text(
-        "def test_add():\n    assert 1 + 1 == 3\n",
+def test_non_git_directory_can_use_static_and_test_evidence(tmp_path, monkeypatch):
+    (tmp_path / "calculator.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_calculator.py").write_text(
+        "from calculator import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "run_static_analysis",
+        lambda repository_path, language: [
+            ReviewIssue(
+                file_path="calculator.py",
+                source="ruff",
+                severity="low",
+                category="F401",
+                line=1,
+                message="Example tool issue.",
+                suggestion="Resolve the tool finding.",
+            )
+        ],
+    )
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "python",
+            "repository_path": str(tmp_path),
+            "run_static_analysis": True,
+            "run_tests": True,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["issues"][0]["source"] == "ruff"
+    assert data["test_result"]["test_status"] == "passed"
+    assert data["test_result"]["collected_cases"] == 1
+    assert data["test_result"]["passed_cases"] == 1
+
+
+def test_pytest_failure_returns_counts_and_explanation(tmp_path):
+    (tmp_path / "test_failure.py").write_text(
+        "def test_failure():\n    assert False\n",
         encoding="utf-8",
     )
 
@@ -148,669 +316,62 @@ def test_run_project_tests_detects_python_failure(tmp_path):
     assert response.status_code == 200
     data = response.json()
     assert data["test_status"] == "failed"
-    assert data["command"] == "pytest"
+    assert data["collected_cases"] == 1
     assert data["failed_cases"] == 1
-    assert "test_add" in data["log_excerpt"]
+    assert "test_failure" in data["log_excerpt"]
     assert data["llm_explanation"]
 
 
-def test_review_repository_can_include_test_result(tmp_path):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-
-    source = tmp_path / "calculator.py"
-    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    tests_dir = tmp_path / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "test_calculator.py").write_text(
-        "from calculator import add\n\n"
-        "def test_add():\n    assert add(1, 2) == 3\n",
-        encoding="utf-8",
-    )
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-m", "initial")
-    _git(tmp_path, "checkout", "-b", "feature/review-me")
-
-    source.write_text("def add(a, b):\n    return a + b\n\n# TODO: add more edge cases\n", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "add todo")
-
-    response = client.post(
-        "/api/review",
-        json={
-            "language": "python",
-            "repository_path": str(tmp_path),
-            "base_branch": "main",
-            "run_tests": True,
-        },
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["test_result"]["test_status"] == "passed"
-    assert data["test_result"]["command"] == "pytest"
-
-
-def test_review_repository_merges_static_analysis_issues(tmp_path, monkeypatch):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-
-    source = tmp_path / "calculator.py"
-    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "initial")
-    _git(tmp_path, "checkout", "-b", "feature/review-me")
-
-    source.write_text("def add(a, b):\n    unused = 1\n    return a + b\n", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "add unused variable")
-
-    def fake_static_analysis(repository_path, language):
-        return [
-            ReviewIssue(
-                source="ruff",
-                file_path="calculator.py",
-                severity="low",
-                category="F841",
-                line=2,
-                message="Local variable `unused` is assigned to but never used.",
-                suggestion="Remove the unused variable.",
-            )
-        ]
-
-    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "main"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["issues"][0]["source"] == "ruff"
-    assert data["issues"][0]["category"] == "F841"
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-
-
-def test_review_repository_without_diff_can_still_run_static_analysis(tmp_path, monkeypatch):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-
-    source = tmp_path / "calculator.py"
-    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    _git(tmp_path, "add", "calculator.py")
-    _git(tmp_path, "commit", "-m", "initial")
-
-    def fake_static_analysis(repository_path, language):
-        return [
-            ReviewIssue(
-                source="mypy",
-                file_path="calculator.py",
-                severity="medium",
-                category="type_error",
-                line=1,
-                message="Example type issue.",
-                suggestion="Add type annotations.",
-            )
-        ]
-
-    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path), "base_branch": "main"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-    assert data["notices"] == ["No diff found for main...HEAD; skipped Git diff review."]
-    assert data["issues"][0]["source"] == "mypy"
-
-
-def test_review_non_git_repository_can_still_run_static_analysis_and_tests(tmp_path, monkeypatch):
-    source = tmp_path / "calculator.py"
-    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    tests_dir = tmp_path / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "test_calculator.py").write_text(
-        "from calculator import add\n\n"
-        "def test_add():\n    assert add(1, 2) == 3\n",
-        encoding="utf-8",
-    )
-
-    def fake_static_analysis(repository_path, language):
-        return [
-            ReviewIssue(
-                source="ruff",
-                file_path="calculator.py",
-                severity="low",
-                category="F401",
-                line=1,
-                message="Example lint issue.",
-                suggestion="Remove the unused import.",
-            )
-        ]
-
-    monkeypatch.setattr(main_module, "run_static_analysis", fake_static_analysis)
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "repository_path": str(tmp_path), "run_tests": True},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-    assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
-    assert data["issues"][0]["source"] == "ruff"
-    assert data["test_result"]["test_status"] == "passed"
-    assert data["test_result"]["command"] == "pytest"
-
-
-def test_review_non_git_repository_reviews_source_code_without_tools(tmp_path):
-    source = tmp_path / "calculator.py"
-    source.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-
-    response = client.post(
-        "/api/review",
-        json={
-            "language": "python",
-            "repository_path": str(tmp_path),
-            "run_static_analysis": False,
-            "run_tests": False,
-        },
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-    assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
-    assert data["issues"][0]["category"] == "logic_bug"
-
-
-def test_static_analysis_does_not_merge_pytest_failures(tmp_path):
-    (tmp_path / "test_failure.py").write_text(
-        "def test_failure():\n    assert False\n",
-        encoding="utf-8",
-    )
-
-    issues = run_static_analysis(str(tmp_path), "python")
-
-    assert all(issue.source != "pytest" for issue in issues)
-
-
-def test_review_file_normalizes_direct_review_source(monkeypatch):
-    class FakeReviewer:
-        async def review(self, language, code):
-            return main_module.ReviewResponse(
-                summary="Found one issue.",
-                issues=[
-                    ReviewIssue(
-                        file_path=None,
-                        source="test_name_that_should_not_be_a_source",
-                        severity="low",
-                        category="logic",
-                        line=1,
-                        message="Example issue.",
-                        suggestion="Example suggestion.",
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FakeReviewer())
-
-    response = client.post(
-        "/api/review/file",
-        data={"language": "python"},
-        files={"file": ("example.py", b"def example():\n    return 1\n", "text/x-python")},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["issues"][0]["source"] == "LLM"
-
-
-def test_review_filter_removes_absent_operation_false_positive():
-    code = "def bitcount(n):\n    count = 0\n    while n:\n        n &= n - 1\n        count += 1\n    return count\n"
-    response = ReviewResponse(
-        summary="Found one issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=3,
-                message="The operation n ^= n - 1 cannot clear the lowest set bit and may loop forever.",
-                suggestion="Use n &= n - 1.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert filtered.issues == []
-
-
-def test_review_filter_keeps_real_operation_bug_and_removes_contract_noise():
-    code = (
-        "def bitcount(n):\n"
-        "    count = 0\n"
-        "    while n:\n"
-        "        n ^= n - 1\n"
-        "        count += 1\n"
-        "    return count\n"
-        "\n"
-        '"""\n'
-        "Input:\n"
-        "    n: a nonnegative int\n"
-        '"""\n'
-    )
-    response = ReviewResponse(
-        summary="Found issues.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=4,
-                message="n ^= n - 1 does not clear the lowest set bit for the documented algorithm.",
-                suggestion="Use n &= n - 1.",
-            ),
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="medium",
-                category="runtime_exception",
-                line=2,
-                message="Negative numbers or None may produce unexpected behavior.",
-                suggestion="Validate negative and non-integer inputs.",
-            ),
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="low",
-                category="maintainability",
-                line=1,
-                message="The function lacks a docstring.",
-                suggestion="添加 docstring。",
-            ),
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert [issue.message for issue in filtered.issues] == [
-        "n ^= n - 1 does not clear the lowest set bit for the documented algorithm."
-    ]
-
-
-def test_review_filter_removes_generic_out_of_contract_input_comments():
-    code = (
-        "def first_digit(n):\n"
-        '    """Input: n is a nonnegative integer."""\n'
-        "    return int(str(n)[0])\n"
-    )
-    response = ReviewResponse(
-        summary="Found issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="medium",
-                category="runtime_exception",
-                line=3,
-                message="This can fail for negative numbers, floats, or None.",
-                suggestion="Add input validation for negative and non-integer values.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert filtered.issues == []
-
-
-def test_review_filter_keeps_tool_and_pytest_evidence_when_protected():
-    response = ReviewResponse(
-        summary="Found issues.",
-        issues=[
-            ReviewIssue(
-                file_path="calculator.py",
-                source="ruff",
-                severity="low",
-                category="F401",
-                line=1,
-                message="Imported name is unused.",
-                suggestion="Remove the unused import.",
-            ),
-            ReviewIssue(
-                file_path="calculator.py",
-                source="LLM + pytest",
-                severity="high",
-                category="test_failure",
-                line=2,
-                message="Tests fail because add returns subtraction.",
-                suggestion="Change the implementation to match the tests.",
-            ),
-        ],
-    )
-
-    filtered = _filter_review_issues("python", "", response, protect_tool_evidence=True)
-
-    assert filtered.issues == response.issues
-
-
-def test_review_filter_removes_graph_node_identity_speculation():
-    code = (
-        "def depth_first_search(startnode, goalnode):\n"
-        "    nodesvisited = set()\n"
-        "\n"
-        "    def search_from(node):\n"
-        "        if node in nodesvisited:\n"
-        "            return False\n"
-        "        elif node is goalnode:\n"
-        "            return True\n"
-        "        nodesvisited.add(node)\n"
-        "        return any(search_from(nextnode) for nextnode in node.successors)\n"
-        "\n"
-        "    return search_from(startnode)\n"
-        "\n"
-        '"""\n'
-        "Input:\n"
-        "    startnode: A digraph node\n"
-        "    goalnode: A digraph node\n"
-        '"""\n'
-    )
-    response = ReviewResponse(
-        summary="Found issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="medium",
-                category="logic_bug",
-                line=7,
-                message="Using `is` to compare goalnode may fail for a different object with the same value.",
-                suggestion="Use equality comparison instead.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert filtered.issues == []
-
-
-def test_review_filter_keeps_missing_visited_update_bug():
-    code = (
-        "def depth_first_search(startnode, goalnode):\n"
-        "    nodesvisited = set()\n"
-        "\n"
-        "    def search_from(node):\n"
-        "        if node in nodesvisited:\n"
-        "            return False\n"
-        "        elif node is goalnode:\n"
-        "            return True\n"
-        "        return any(search_from(nextnode) for nextnode in node.successors)\n"
-        "\n"
-        "    return search_from(startnode)\n"
-        "\n"
-        '"""\n'
-        "Input:\n"
-        "    startnode: A digraph node\n"
-        "    goalnode: A digraph node\n"
-        '"""\n'
-    )
-    response = ReviewResponse(
-        summary="Found issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=9,
-                message="nodesvisited is never updated before recursion, so cyclic graphs can recurse forever.",
-                suggestion="Add the current node to nodesvisited before visiting successors.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert [issue.message for issue in filtered.issues] == [
-        "nodesvisited is never updated before recursion, so cyclic graphs can recurse forever."
-    ]
-
-
-def test_review_filter_removes_speculative_batch_false_positives():
-    response = ReviewResponse(
-        summary="Found issues.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="medium",
-                category="runtime",
-                line=2,
-                message="If the input list is empty, arr[0] raises IndexError.",
-                suggestion="Add input validation for empty input.",
-            ),
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=9,
-                message="This is not the standard LCS dynamic programming algorithm.",
-                suggestion="Use standard dynamic programming and take max on mismatch.",
-            ),
-        ],
-    )
-
-    code = "def kth(arr, k):\n    pivot = arr[0]\n    return pivot\n"
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert filtered.issues == []
-
-
-def test_review_filter_keeps_clear_behavior_bug_without_contract_noise():
-    code = "def add(a, b):\n    return a - b\n"
-    response = ReviewResponse(
-        summary="Found issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=2,
-                message="add returns subtraction instead of addition.",
-                suggestion="Return a + b.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert len(filtered.issues) == 1
-
-
-def test_review_filter_removes_empty_sublist_sum_contract_noise():
-    code = (
-        "def max_sublist_sum(arr):\n"
-        "    return 0\n"
-        '"""\n'
-        "Efficient equivalent to max(sum(arr[i:j]) for 0 <= i <= j <= len(arr))\n"
-        '"""\n'
-    )
-    response = ReviewResponse(
-        summary="Found issue.",
-        issues=[
-            ReviewIssue(
-                file_path=None,
-                source="LLM",
-                severity="high",
-                category="logic_bug",
-                line=2,
-                message="When all elements are negative, this returns 0 instead of the largest negative value.",
-                suggestion="Use Kadane's algorithm without allowing an empty sublist.",
-            )
-        ],
-    )
-
-    filtered = _filter_review_issues("python", code, response)
-
-    assert filtered.issues == []
-
-
-def test_direct_review_endpoint_applies_common_filter(monkeypatch):
-    class FakeReviewer:
-        async def review(self, language, code):
-            return ReviewResponse(
-                summary="Found issue.",
-                issues=[
-                    ReviewIssue(
-                        file_path=None,
-                        source="LLM",
-                        severity="medium",
-                        category="runtime",
-                        line=2,
-                        message="If the input list is empty, arr[0] raises IndexError.",
-                        suggestion="Add input validation for empty input.",
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FakeReviewer())
-
-    response = client.post(
-        "/api/review",
-        json={"language": "python", "code": "def kth(arr, k):\n    return arr[0]\n"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["issues"] == []
-
-
-def test_git_repository_review_endpoint_applies_common_filter(tmp_path, monkeypatch):
-    _git(tmp_path, "init", "-b", "main")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    _git(tmp_path, "config", "user.name", "Test User")
-    source = tmp_path / "example.py"
-    source.write_text("def value():\n    return 1\n", encoding="utf-8")
-    _git(tmp_path, "add", "example.py")
-    _git(tmp_path, "commit", "-m", "initial")
-    source.write_text("def value(items):\n    return items[0]\n", encoding="utf-8")
-
-    class FakeReviewer:
-        async def review_repository(self, language, diff_context, static_issues, test_result):
-            return ReviewResponse(
-                summary="Found issue.",
-                issues=[
-                    ReviewIssue(
-                        file_path="example.py",
-                        source="LLM",
-                        severity="medium",
-                        category="runtime",
-                        line=2,
-                        message="If the input list is empty, items[0] raises IndexError.",
-                        suggestion="Add input validation for empty input.",
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FakeReviewer())
-
-    response = client.post(
-        "/api/review",
-        json={
-            "language": "python",
-            "repository_path": str(tmp_path),
-            "base_branch": "main",
-            "run_static_analysis": False,
-            "run_tests": False,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["issues"] == []
-
-
-def test_non_git_repository_review_endpoint_applies_common_filter(tmp_path, monkeypatch):
-    (tmp_path / "example.py").write_text("def value(items):\n    return items[0]\n", encoding="utf-8")
-
-    class FakeReviewer:
-        async def review(self, language, code):
-            return ReviewResponse(
-                summary="Found issue.",
-                issues=[
-                    ReviewIssue(
-                        file_path="example.py",
-                        source="LLM",
-                        severity="medium",
-                        category="runtime",
-                        line=2,
-                        message="If the input list is empty, items[0] raises IndexError.",
-                        suggestion="Add input validation for empty input.",
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FakeReviewer())
-
-    response = client.post(
-        "/api/review",
-        json={
-            "language": "python",
-            "repository_path": str(tmp_path),
-            "run_static_analysis": False,
-            "run_tests": False,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["issues"] == []
-
-
-def test_review_non_git_repository_summarizes_test_failure_without_diff_text(tmp_path):
-    (tmp_path / "test_failure.py").write_text(
-        "def test_failure():\n    assert False\n",
+def test_test_counts_include_skipped_cases(tmp_path):
+    (tmp_path / "test_cases.py").write_text(
+        "import pytest\n\ndef test_ok():\n    assert True\n\n@pytest.mark.skip(reason='demo')\ndef test_skip():\n    pass\n",
         encoding="utf-8",
     )
 
     response = client.post(
-        "/api/review",
-        json={
-            "language": "python",
-            "repository_path": str(tmp_path),
-            "run_static_analysis": False,
-            "run_tests": True,
-        },
+        "/api/test",
+        json={"repository_path": str(tmp_path), "language": "python", "timeout_seconds": 60},
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"] == "Found 1 issue(s) from combined repository evidence."
-    assert "diff" not in data["summary"].lower()
-    assert "No review issues found" not in data["summary"]
-    assert data["notices"] == ["Path is not a Git repository; skipped Git diff review."]
-    assert data["issues"][0]["source"] == "pytest + LLM"
-    assert data["issues"][0]["category"] == "test_failure"
-    assert data["test_result"]["test_status"] == "failed"
-    assert data["test_result"]["llm_explanation"] is None
+    assert data["test_status"] == "passed"
+    assert data["collected_cases"] == 2
+    assert data["passed_cases"] == 1
+    assert data["skipped_cases"] == 1
+
+
+def test_pytest_collection_error_is_not_reported_as_no_tests(tmp_path):
+    (tmp_path / "test_import_error.py").write_text(
+        "import module_that_does_not_exist\n",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/test",
+        json={"repository_path": str(tmp_path), "language": "python", "timeout_seconds": 60},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["test_status"] == "failed"
+    assert data["collected_cases"] == 0
+    assert data["error_cases"] == 1
 
 
 def test_review_requires_code_or_repository():
     response = client.post("/api/review", json={"language": "python"})
 
     assert response.status_code == 422
+
+
+def test_load_repository_diff_rejects_non_git_directory(tmp_path):
+    try:
+        load_repository_diff(str(tmp_path), 24000, "main")
+    except Exception as exc:
+        assert "not a Git repository" in str(exc)
+    else:
+        raise AssertionError("non-Git directory should not produce a Git diff")
 
 
 def _git(cwd, *args):

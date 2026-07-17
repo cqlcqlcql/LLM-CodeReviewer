@@ -263,6 +263,13 @@
         font-weight: 700;
       }
 
+      .input-help {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
       input,
       select,
       textarea {
@@ -405,7 +412,8 @@
         color: var(--success);
       }
 
-      .badge.unsupported {
+      .badge.unsupported,
+      .badge.no_tests {
         background: var(--soft);
         color: #475467;
       }
@@ -734,6 +742,73 @@
         overflow-wrap: anywhere;
       }
 
+      .test-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        margin: 14px 0;
+      }
+
+      .test-summary-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .test-summary-card span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .test-summary-card strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 20px;
+      }
+
+      .test-case-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .test-case-row {
+        border: 1px solid #fecdca;
+        border-radius: 8px;
+        background: #fff6f5;
+        padding: 10px 12px;
+      }
+
+      .test-case-row strong,
+      .test-case-row span {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+
+      .test-case-row span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .test-log-details {
+        margin-top: 14px;
+      }
+
+      .test-log-details summary {
+        cursor: pointer;
+        color: #344054;
+        font-weight: 800;
+      }
+
+      @media (max-width: 900px) {
+        .test-summary-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
       .report {
         min-height: 420px;
         font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
@@ -931,6 +1006,10 @@
               <label for="review-file">单个代码文件</label>
               <input id="review-file" type="file" />
 
+              <label for="review-test-files">关联测试文件（可多选）</label>
+              <input id="review-test-files" type="file" multiple />
+              <p class="input-help">例如同时选择 test_buggy_business_logic.py；这些文件会与主源码一起进入临时 Git 工作区。</p>
+
               <div class="checks">
                 <label class="check" for="run-static">
                   <input id="run-static" type="checkbox" checked />
@@ -944,14 +1023,14 @@
 
               <div class="actions">
                 <button class="primary" id="start-review" type="button">开始评审</button>
-                <button class="secondary" id="review-file-only" type="button">评审单文件</button>
+                <button class="secondary" id="review-file-only" type="button">评审所选文件</button>
                 <button class="secondary" id="run-tests-only" type="button">只运行测试</button>
               </div>
             </div>
 
             <div class="panel">
               <h2>当前能力</h2>
-              <p class="subtitle">当前后端支持目录和单文件入口：目录会收集 diff、工具和测试结果，单文件会直接交给 LLM 评审。</p>
+              <p class="subtitle">目录和单文件都会先收集 Git diff、静态分析和测试证据，再交给 DeepSeek 综合评审；非 Git 目录不会扫描整仓源码。</p>
               <div class="status-strip" style="grid-template-columns: 1fr 1fr; margin-top: 14px">
                 <div class="metric">
                   <span>输入</span>
@@ -1072,7 +1151,7 @@
       $$(".nav button").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
       });
-      $("#start-review").addEventListener("click", runReview);
+      $("#start-review").addEventListener("click", runSelectedReview);
       $("#review-file-only").addEventListener("click", runFileReview);
       $("#run-tests-only").addEventListener("click", runTestsOnly);
       $("#export-from-result").addEventListener("click", () => setView("report"));
@@ -1104,6 +1183,30 @@
           run_static_analysis: $("#run-static").checked,
           run_tests: $("#run-tests").checked,
         };
+      }
+
+      async function runSelectedReview() {
+        const repositoryPath = $("#repo").value.trim();
+        const file = $("#review-file").files?.[0];
+        const relatedFiles = Array.from($("#review-test-files").files || []);
+
+        if (repositoryPath && (file || relatedFiles.length)) {
+          showError("本地项目目录和单文件不能同时评审，请保留其中一种输入。");
+          return;
+        }
+        if (file) {
+          await runFileReview();
+          return;
+        }
+        if (repositoryPath) {
+          await runReview();
+          return;
+        }
+        if (relatedFiles.length) {
+          showError("已选择关联测试文件，请再选择一个主源码文件。");
+          return;
+        }
+        showError("请填写本地项目目录，或选择一个代码文件。");
       }
 
       async function runReview() {
@@ -1150,6 +1253,7 @@
           setView("result");
         } catch (error) {
           markStep("review", "failed", error.message);
+          stopUnconfirmedSteps("review");
           showError(error.message);
         } finally {
           setBusy(false);
@@ -1187,6 +1291,7 @@
 
       async function runFileReview() {
         const file = $("#review-file").files?.[0];
+        const relatedFiles = Array.from($("#review-test-files").files || []);
         if (!file) {
           showError("请选择要评审的代码文件。");
           return;
@@ -1195,28 +1300,36 @@
         const config = {
           language: $("#language").value,
           repository_path: file.name,
-          base_branch: "single file",
-          run_static_analysis: false,
-          run_tests: false,
+          base_branch: "main",
+          run_static_analysis: $("#run-static").checked,
+          run_tests: $("#run-tests").checked,
         };
 
         state.review = null;
-        state.diff = null;
-        state.diffNotice = `单文件评审：${file.name}`;
+        state.diff = await buildUploadedFilesDiff([file, ...relatedFiles]);
+        state.diffNotice = `临时 Git 工作区：${file.name} + ${relatedFiles.length} 个关联文件`;
         state.test = null;
-        state.task = createFileTask(file);
+        state.task = createFileTask(file, relatedFiles, config);
         setView("task");
         setBusy(true);
+        markStep("diff", "running");
+        markStep("static", config.run_static_analysis ? "running" : "skipped");
+        markStep("test", config.run_tests ? "running" : "skipped");
         markStep("review", "running");
         renderAll();
 
         try {
-          state.review = await requestFileReview(file, config.language);
+          state.review = await requestFileReview(file, relatedFiles, config);
+          state.test = state.review.test_result || null;
+          markStep("diff", "done", "已生成隔离仓库的 main...HEAD diff");
+          markStep("static", config.run_static_analysis ? "done" : "skipped");
+          markStep("test", config.run_tests ? "done" : "skipped");
           markStep("review", "done");
           saveRun(config);
           setView("result");
         } catch (error) {
           markStep("review", "failed", error.message);
+          stopUnconfirmedSteps("review");
           showError(error.message);
         } finally {
           setBusy(false);
@@ -1234,10 +1347,13 @@
         );
       }
 
-      async function requestFileReview(file, language) {
+      async function requestFileReview(file, relatedFiles, config) {
         const formData = new FormData();
-        formData.append("language", language);
+        formData.append("language", config.language);
+        formData.append("run_static_analysis", String(config.run_static_analysis));
+        formData.append("run_tests", String(config.run_tests));
         formData.append("file", file);
+        relatedFiles.forEach((relatedFile) => formData.append("related_files", relatedFile));
         return readJson(
           await fetch("/api/review/file", {
             method: "POST",
@@ -1314,17 +1430,36 @@
         return { config, steps };
       }
 
-      function createFileTask(file) {
+      function createFileTask(file, relatedFiles, config) {
+        const task = createTask(config, config.run_tests);
+        task.steps[0].label = "创建临时 Git 工作区";
+        task.steps[0].detail = `${file.name} + ${relatedFiles.length} 个关联文件 / main...HEAD`;
+        return task;
+      }
+
+      async function buildUploadedFilesDiff(files) {
+        const summaries = [];
+        const diffBlocks = [];
+        for (const file of files) {
+          const content = await file.text();
+          const lines = String(content).replace(/\r\n/g, "\n").split("\n");
+          const body = lines.map((line) => `+${line}`).join("\n");
+          summaries.push({ path: file.name, additions: lines.length, deletions: 0, hunks: 1 });
+          diffBlocks.push(
+            [
+              `diff --git a/${file.name} b/${file.name}`,
+              "new file mode 100644",
+              "--- /dev/null",
+              `+++ b/${file.name}`,
+              `@@ -0,0 +1,${lines.length} @@`,
+              body,
+            ].join("\n"),
+          );
+        }
         return {
-          config: { repository_path: file.name, language: $("#language").value },
-          steps: [
-            {
-              id: "review",
-              label: "单文件 LLM 评审",
-              status: "pending",
-              detail: file.name,
-            },
-          ],
+          base_branch: "main",
+          files: summaries,
+          diff: diffBlocks.join("\n"),
         };
       }
 
@@ -1334,6 +1469,17 @@
         if (!step) return;
         step.status = status;
         if (detail) step.detail = detail;
+        renderProgress();
+      }
+
+      function stopUnconfirmedSteps(exceptId) {
+        if (!state.task) return;
+        state.task.steps.forEach((step) => {
+          if (step.id !== exceptId && (step.status === "running" || step.status === "pending")) {
+            step.status = "skipped";
+            step.detail = "请求已中止，未收到该步骤的完成状态";
+          }
+        });
         renderProgress();
       }
 
@@ -1826,20 +1972,78 @@
           $("#test-panel").textContent = "尚未运行测试。";
           return;
         }
+        const failedCaseItems = extractPytestFailedCases(test.log_excerpt || "");
+        const countCards = [
+          ["收集", test.collected_cases],
+          ["通过", test.passed_cases],
+          ["失败", test.failed_cases],
+          ["跳过", test.skipped_cases],
+          ["错误", test.error_cases],
+        ];
         $("#test-panel").className = "";
         $("#test-panel").innerHTML = `
           <div class="issue-head">
             <span class="badge ${test.test_status}">${labelStatus(test.test_status)}</span>
             <span class="badge">${escapeHtml(test.command || "无测试命令")}</span>
-            <span class="badge">失败用例 ${test.failed_cases ?? "-"}</span>
           </div>
+          <div class="test-summary-grid">
+            ${countCards
+              .map(
+                ([label, value]) => `
+                  <div class="test-summary-card">
+                    <span>${label}</span>
+                    <strong>${escapeHtml(value ?? "-")}</strong>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+          ${
+            test.test_status === "no_tests"
+              ? '<div class="empty">pytest 没有发现测试用例。这不是测试失败；请添加 test_*.py 或检查项目的 pytest 配置。</div>'
+              : ""
+          }
+          ${
+            failedCaseItems.length
+              ? `<section class="analysis-panel">
+                  <h3>失败用例</h3>
+                  <div class="test-case-list">${failedCaseItems
+                    .map(
+                      (item) => `
+                        <div class="test-case-row">
+                          <strong>${escapeHtml(item.name)}</strong>
+                          <span>${escapeHtml(item.reason || "请展开日志查看断言和 traceback")}</span>
+                        </div>
+                      `,
+                    )
+                    .join("")}</div>
+                </section>`
+              : ""
+          }
           ${
             test.llm_explanation
               ? `<div class="analysis-panel"><h3>测试分析</h3>${renderDiagnosis(parseTestDiagnosis(test.llm_explanation, test.failed_cases))}</div>`
               : ""
           }
-          <pre class="log">${escapeHtml(test.log_excerpt || "")}</pre>
+          <details class="test-log-details" ${test.test_status === "error" || test.test_status === "timeout" ? "open" : ""}>
+            <summary>查看 pytest 原始日志</summary>
+            <pre class="log">${escapeHtml(test.log_excerpt || "暂无日志")}</pre>
+          </details>
         `;
+      }
+
+      function extractPytestFailedCases(log) {
+        const items = [];
+        const seen = new Set();
+        String(log)
+          .split("\n")
+          .forEach((line) => {
+            const match = line.trim().match(/^FAILED\s+(.+?)(?:\s+-\s+(.+))?$/);
+            if (!match || seen.has(match[1])) return;
+            seen.add(match[1]);
+            items.push({ name: match[1], reason: match[2] || "" });
+          });
+        return items.slice(0, 20);
       }
 
       function renderReport() {
@@ -2027,7 +2231,12 @@
       function showError(message) {
         setView("task");
         if (!state.task) state.task = { steps: [] };
-        state.task.steps.unshift({ id: "error", label: "任务失败", status: "failed", detail: message });
+        const existing = state.task.steps.find((step) => step.id === "error");
+        if (existing) {
+          existing.detail = message;
+        } else {
+          state.task.steps.unshift({ id: "error", label: "任务失败", status: "failed", detail: message });
+        }
         renderProgress();
       }
 
@@ -2069,6 +2278,7 @@
             skipped: "跳过",
             failed: "失败",
             passed: "通过",
+            no_tests: "未发现用例",
             timeout: "超时",
             unsupported: "不支持",
             error: "错误",

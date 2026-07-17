@@ -65,16 +65,9 @@ client = AsyncOpenAI(
 )
 ```
 
-第一版默认使用：
+当前版本统一使用 DeepSeek：
 
 ```env
-LLM_PROVIDER=mock
-```
-
-这样没有 API Key 也能演示完整流程。要切换到 DeepSeek：
-
-```env
-LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY=你的 DeepSeek Key
 DEEPSEEK_MODEL=deepseek-v4-flash
 ```

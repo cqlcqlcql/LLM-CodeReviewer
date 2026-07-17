@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -24,6 +25,8 @@ SKIP_DIRS = {
     "test",
 }
 
+MAX_SOURCE_FILE_BYTES = 1_000_000
+
 
 def trim_code(code: str, max_chars: int) -> str:
     if len(code) <= max_chars:
@@ -44,23 +47,33 @@ def load_repository_code(repository_path: str, language: str, max_chars: int) ->
 
     chunks: list[str] = []
     total = 0
-    for path in sorted(root.rglob("*")):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if path.name.startswith("test_") or path.name.endswith("_test.py"):
-            continue
-        if not path.is_file() or path.suffix.lower() not in extensions:
-            continue
+    for current_root, directory_names, file_names in os.walk(root):
+        directory_names[:] = sorted(name for name in directory_names if name not in SKIP_DIRS)
+        for file_name in sorted(file_names):
+            path = Path(current_root) / file_name
+            if path.name.startswith("test_") or path.name.endswith("_test.py"):
+                continue
+            if path.suffix.lower() not in extensions:
+                continue
+            try:
+                if path.stat().st_size > MAX_SOURCE_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
 
-        try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            content = path.read_text(encoding="utf-8", errors="ignore")
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
 
-        relative = path.relative_to(root)
-        block = f"\n\n# File: {relative}\n{content}"
-        chunks.append(block)
-        total += len(block)
+            relative = path.relative_to(root)
+            block = f"\n\n# File: {relative}\n{content}"
+            chunks.append(block)
+            total += len(block)
+            if total >= max_chars:
+                break
         if total >= max_chars:
             break
 

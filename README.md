@@ -2,21 +2,26 @@
 
 LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 API，用静态 HTML 前端提供可操作界面，把代码文本、单文件上传、本地仓库 diff、静态分析、自动化测试和 LLM 评审合并成统一的结构化结果。
 
-这个项目的重点不是训练模型，而是验证一条可落地的代码评审链路：先由后端收集明确证据，再交给 mock reviewer 或 DeepSeek reviewer 生成 `ReviewResponse`，最后由前端展示问题、测试诊断、diff 摘要、Markdown 报告和历史记录。
+这个项目的重点不是训练模型，而是验证一条可落地的代码评审链路：先由后端收集明确证据，再交给 DeepSeek reviewer 生成 `ReviewResponse`，最后由前端展示问题、测试诊断、diff 摘要、Markdown 报告和历史记录。
 
 完整项目说明、流程图、数据结构和阶段复盘见 [docs/project-overview.md](docs/project-overview.md)。
 
 ## 当前能力
 
 - `POST /api/review`：评审代码文本，或评审本地项目目录。
-- `POST /api/review/file`：上传单个代码文件并直接评审。
+- `POST /api/review/file`：把主源码和可选的关联测试文件放入隔离的临时 Git 工作区，再复用 diff、静态分析、测试和 DeepSeek 综合评审流程。
 - `POST /api/diff`：读取本地 Git 仓库的 `base_branch...HEAD` diff，并返回文件级摘要。
 - `POST /api/test`：识别并运行 Python、JavaScript/TypeScript、Java 项目的测试命令。
 - Git 仓库路径优先走 diff review，只关注当前分支相对基础分支的变更。
-- 非 Git 目录不会被当成代码问题，而是记录 notice，并继续执行可用的静态分析和测试。
+- 非 Git 目录不会扫描并拼接全仓源码，而是记录 notice，并只使用可选的静态分析和测试证据。
 - 静态分析支持 Python 的 `ruff`、`mypy`、`bandit`，以及 JS/TS 项目的 `npm run lint`。
-- 默认 `LLM_PROVIDER=mock`，没有 API Key 也能完整演示和测试。
-- 可切换到 `LLM_PROVIDER=deepseek`，通过 OpenAI SDK 兼容接口调用真实模型。
+- 产品评审统一通过 OpenAI SDK 兼容接口调用 DeepSeek；自动化测试使用测试目录中的确定性替身，不访问网络。
+
+## 中期答辩后改进
+
+- 单文件评审使用唯一任务目录，支持附带最多 20 个关联测试文件，并自动建立空基线提交和 review 提交。
+- 移除产品 MockReviewer 和语义黑名单过滤，保留结构化 JSON 校验与证据优先提示词。
+- pytest 运行项目实际发现的全部用例；前端展示收集、通过、失败、跳过、错误数量，失败列表和可展开日志。
 
 ## 项目结构
 
@@ -55,11 +60,12 @@ flowchart TD
     B -->|粘贴代码| C["/api/review: 直接裁剪代码文本"]
     B -->|上传单文件| D["/api/review/file: 读取 UploadFile"]
     B -->|本地目录| E{"是否 Git 仓库"}
-    C --> R["mock / DeepSeek reviewer"]
-    D --> R
+    C --> R["DeepSeek reviewer"]
+    D --> W["创建隔离 Git 工作区和两次提交"]
+    W --> F
     E -->|是| F["读取 git diff base_branch...HEAD"]
     F --> G["解析文件、hunk、ADDED 行号"]
-    E -->|否| H["记录 notice，降级为目录代码/工具证据"]
+    E -->|否| H["记录 notice，不扫描全仓源码"]
     G --> I["可选静态分析"]
     H --> I
     I --> J["可选自动化测试"]
@@ -91,7 +97,11 @@ flowchart TD
   "test_result": {
     "test_status": "passed",
     "command": "pytest",
+    "collected_cases": 8,
+    "passed_cases": 8,
     "failed_cases": 0,
+    "skipped_cases": 0,
+    "error_cases": 0,
     "log_excerpt": "...",
     "llm_explanation": null
   }
@@ -137,24 +147,16 @@ uvicorn app.main:app --reload
 
 ## 环境变量
 
-默认 `.env.example` 使用 mock 模式：
+复制 `.env.example` 后填写 DeepSeek API Key：
 
 ```env
-LLM_PROVIDER=mock
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 MAX_CODE_CHARS=24000
 ```
 
-真实模型调用：
-
-```env
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=你的 DeepSeek Key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
-```
+产品运行不再提供 mock provider；缺少 `DEEPSEEK_API_KEY` 时，健康检查仍可用，但评审请求会明确返回配置错误。
 
 ## API 示例
 
@@ -194,7 +196,7 @@ curl -X POST http://127.0.0.1:8000/api/test \
 
 主界面包含五个视图：
 
-- 任务页：选择代码文本、单文件或本地目录，配置 base branch、静态分析和测试。
+- 任务页：选择代码文本、主源码及关联测试文件，或本地目录，并配置 base branch、静态分析和测试。
 - 结果页：展示总体评分、问题卡片、证据片段、diff 摘要和测试状态。
 - 测试页：展示测试命令、状态、失败用例数量、日志摘要和 LLM 测试分析。
 - 报告页：生成 Markdown 报告，可下载或通过浏览器打印。
@@ -210,4 +212,4 @@ curl -X POST http://127.0.0.1:8000/api/test \
 D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
 ```
 
-测试会强制使用 `LLM_PROVIDER=mock`，覆盖代码文本评审、Git diff 评审、base branch 校验、静态分析合并、非 Git 目录降级、测试运行和响应模型等关键行为。
+测试会自动注入仅存在于 `tests/` 的确定性 reviewer，不访问 DeepSeek。测试覆盖代码文本评审、单文件临时 Git 工作区、Git diff、base branch、静态分析合并、非 Git 目录降级、pytest 数量统计和响应模型等关键行为。

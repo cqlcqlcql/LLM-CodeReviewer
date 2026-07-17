@@ -12,12 +12,13 @@ code-reviewer-mvp/
     __init__.py
     main.py                  # FastAPI 应用、路由和主流程编排
     schemas.py               # ReviewRequest、ReviewResponse、ReviewIssue 等数据结构
-    settings.py              # LLM_PROVIDER、DeepSeek、MAX_CODE_CHARS 配置
+    settings.py              # DeepSeek、MAX_CODE_CHARS 配置
     services/
       __init__.py
-      code_loader.py         # 非 Git 目录源码读取、扩展名过滤、测试目录跳过、裁剪
+      code_loader.py         # 代码文本裁剪和受限源码读取工具
       diff_loader.py         # git diff 执行、base branch 校验、unified diff 解析
-      llm.py                 # CodeReviewer 抽象、MockReviewer、DeepSeekReviewer
+      llm.py                 # CodeReviewer 抽象和 DeepSeekReviewer
+      single_file_workspace.py # 单文件隔离 Git 工作区
       static_analysis.py     # ruff、mypy、bandit、npm run lint
       test_runner.py         # pytest、npm test、mvn test、gradle test
   frontend/
@@ -43,7 +44,7 @@ code-reviewer-mvp/
 | API 编排 | `app/main.py` | 接收请求、区分路径、组合 diff、静态分析、测试和 reviewer 输出 |
 | 数据契约 | `app/schemas.py` | 定义请求、响应、问题、diff、测试结果结构 |
 | 配置 | `app/settings.py` | 从 `.env` 读取 provider、DeepSeek 和长度限制 |
-| 代码读取 | `app/services/code_loader.py` | 读取非 Git 目录源码，过滤依赖目录、缓存目录和测试文件 |
+| 单文件工作区 | `app/services/single_file_workspace.py` | 创建唯一临时目录、空基线提交和 review 提交 |
 | Diff | `app/services/diff_loader.py` | 执行 `git diff <base_branch>...HEAD`，解析文件、hunk 和行号 |
 | LLM | `app/services/llm.py` | mock 规则、DeepSeek 调用、JSON 校验、问题过滤和去重 |
 | 工具证据 | `app/services/static_analysis.py` | 把本地工具输出转成 `ReviewIssue` |
@@ -61,10 +62,8 @@ flowchart TD
     Input -->|本地目录| RepoPath["POST /api/review<br/>repository_path"]
 
     CodeText --> TrimCode["trim_code(MAX_CODE_CHARS)"]
-    FileUpload --> DecodeFile["读取 bytes 并按 UTF-8 解码"]
-    DecodeFile --> TrimCode
-    TrimCode --> DirectReview["reviewer.review(language, code)"]
-    DirectReview --> ForceLLM["问题 source 统一为 LLM"]
+    FileUpload --> FileWorkspace["唯一临时目录<br/>空 main 提交 + review 提交"]
+    FileWorkspace --> GitDiff
 
     RepoPath --> ValidatePath["校验路径存在且是目录"]
     ValidatePath --> IsGit{"目录包含 .git ?"}
@@ -76,11 +75,11 @@ flowchart TD
     DiffOk -->|否| NoDiffNotice["notice: No diff found<br/>跳过 diff review"]
 
     IsGit -->|否| NonGitNotice["notice: Path is not a Git repository<br/>跳过 Git diff"]
-    NonGitNotice --> LoadSource["load_repository_code<br/>读取目录源码作为上下文"]
+    NonGitNotice --> SkipSource["不扫描或拼接全仓源码"]
 
     FormatDiff --> StaticGate{"run_static_analysis ?"}
     NoDiffNotice --> StaticGate
-    LoadSource --> StaticGate
+    SkipSource --> StaticGate
 
     StaticGate -->|是| StaticTools["ruff / mypy / bandit / npm run lint"]
     StaticGate -->|否| TestGate{"run_tests ?"}
@@ -104,9 +103,10 @@ flowchart TD
 
 | 路径 | 输入 | 主要证据 | 是否有 diff 行号 | 适用场景 |
 | --- | --- | --- | --- | --- |
-| 单文件/代码文本 | 粘贴代码或上传文件 | 文件内容本身 | 通常没有 Git diff 行号，但 reviewer 或工具可给代码行号 | 快速检查一个独立片段或文件 |
+| 单文件上传 | 主源码和可选关联测试文件 | 临时仓库 diff、静态分析、测试 | 有。上传文件作为新增文件进入 `main...HEAD` | 快速检查源码，并用关联测试验证业务行为 |
+| 代码文本 | 粘贴代码 | 代码文本本身 | reviewer 可给代码行号 | 快速检查独立片段 |
 | Git 仓库 | 本地 Git 项目路径 | `base_branch...HEAD` diff、静态分析、测试 | 有。`ADDED new_line=<n>` 可追溯到新文件行号 | 评审当前分支相对基础分支的改动 |
-| 非 Git 目录 | 普通本地目录 | 目录源码、静态分析、测试 | 无 Git diff 行号 | 临时目录、解压项目、教学或演示代码 |
+| 非 Git 目录 | 普通本地目录 | 静态分析、测试 | 无 Git diff 行号 | 大型目录的安全降级，不发送全仓源码 |
 
 ## 3. 技术栈
 
@@ -173,9 +173,13 @@ timeout_seconds: integer = 60
 ```
 
 ```text
-test_status: passed | failed | timeout | unsupported | error
+test_status: passed | failed | no_tests | timeout | unsupported | error
 command: string | null
+collected_cases: integer | null
+passed_cases: integer | null
 failed_cases: integer | null
+skipped_cases: integer | null
+error_cases: integer | null
 log_excerpt: string
 llm_explanation: string | null
 ```
@@ -203,22 +207,7 @@ ChangedFileSummary:
   hunks: integer
 ```
 
-## 5. Mock 与 DeepSeek 调用
-
-### MockReviewer
-
-mock reviewer 是默认模式，适合本地演示、自动化测试和没有 API Key 的环境。
-
-它会稳定识别一些可复现问题：
-
-- Python `add` 函数返回 `a - b`。
-- 代码中出现 `TODO` 或 `FIXME`。
-- 仓库评审时合并静态分析、diff 和测试失败证据。
-- 当测试失败且还没有明确逻辑问题时，补充一条 `pytest + LLM` 的高危测试失败问题。
-
-mock 的价值是让项目在没有网络和真实模型的情况下仍能完整跑通。
-
-### DeepSeekReviewer
+## 5. DeepSeek 调用
 
 DeepSeek reviewer 使用 OpenAI Python SDK 的兼容接口：
 
@@ -231,7 +220,6 @@ api_key = DEEPSEEK_API_KEY
 启用方式：
 
 ```env
-LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY=你的 DeepSeek Key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
@@ -385,7 +373,10 @@ Content-Type: multipart/form-data
 
 ```text
 language: python
-file: 上传的代码文件
+file: 主源码文件
+related_files: 可选，可重复提交，最多 20 个关联测试或辅助文件
+run_static_analysis: true | false
+run_tests: true | false
 ```
 
 ### Diff 预览
@@ -420,7 +411,7 @@ POST /api/test
 | 状态 | 含义 | 处理 |
 | --- | --- | --- |
 | 没有 diff | 当前分支相对基础分支没有变更 | 记录 notice，不生成 issue |
-| 非 Git 仓库 | 目录没有 `.git` | 跳过 diff，继续使用目录源码、静态分析和测试 |
+| 非 Git 仓库 | 目录没有 `.git` | 跳过 diff 和全仓源码扫描，只使用静态分析和测试证据 |
 | 工具未安装 | ruff、mypy、bandit、npm 等不存在 | 跳过该工具，不生成 issue |
 | 测试命令无法识别 | 没有识别到支持的项目类型 | 返回 `unsupported` |
 | 测试超时 | 命令超过 `timeout_seconds` | 返回 `timeout` 并保留日志摘要 |
@@ -434,12 +425,12 @@ POST /api/test
 D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
 ```
 
-测试会强制走 `LLM_PROVIDER=mock`，确保本地、CI 或无网络环境下也能稳定验证。
+测试会从 `tests/conftest.py` 注入确定性 reviewer，确保本地和 CI 不访问 DeepSeek，也不消耗 API 配额。
 
 ## 13. 后续可扩展方向
 
 - 把评分逻辑从前端迁移到后端，让 API、报告和 UI 使用同一分数来源。
 - 增加 `D` 档，用于更严重的阻断状态，例如模型输出不可用、测试基础设施异常或多个高危安全问题。
-- 对 `pytest collected 0 items` 单独标记为 `unsupported` 或 `no_tests`。
+- `pytest collected 0 items` 已单独标记为 `no_tests`，前端不会把它显示成失败。
 - 给非 Git 目录增加更明确的“目录扫描评审”模式。
 - 增加报告 PDF 导出、历史持久化、GitHub PR bot 或 CI 集成。

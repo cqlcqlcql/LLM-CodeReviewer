@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 Severity = Literal["low", "medium", "high"]
-TestStatus = Literal["passed", "failed", "timeout", "unsupported", "error"]
+TestStatus = Literal["passed", "failed", "no_tests", "timeout", "unsupported", "error"]
 
 
 class ReviewIssue(BaseModel):
@@ -48,7 +48,11 @@ class TestRunRequest(BaseModel):
 class TestRunResponse(BaseModel):
     test_status: TestStatus
     command: str | None
+    collected_cases: int | None = None
+    passed_cases: int | None = None
     failed_cases: int | None = None
+    skipped_cases: int | None = None
+    error_cases: int | None = None
     log_excerpt: str
     llm_explanation: str | None = None
 
