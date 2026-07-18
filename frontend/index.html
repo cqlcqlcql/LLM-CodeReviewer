@@ -324,6 +324,168 @@
         margin-top: 16px;
       }
 
+      .create-shell {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        display: grid;
+        gap: 14px;
+      }
+
+      .create-shell .panel {
+        padding: 14px;
+      }
+
+      .create-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 310px;
+        gap: 14px;
+        align-items: start;
+      }
+
+      .section-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 10px;
+      }
+
+      .mode-picker {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .mode-option {
+        display: grid;
+        grid-template-columns: 38px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        min-height: 78px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #ffffff;
+        color: var(--text);
+        text-align: left;
+        font-weight: 400;
+      }
+
+      .mode-option:hover {
+        border-color: #84adff;
+        background: #f8faff;
+      }
+
+      .mode-option.active {
+        border-color: var(--primary);
+        background: var(--primary-soft);
+        box-shadow: 0 0 0 1px var(--primary);
+      }
+
+      .mode-icon {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        background: var(--soft);
+        color: #344054;
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .mode-option.active .mode-icon {
+        background: var(--primary);
+        color: #ffffff;
+      }
+
+      .mode-title {
+        display: block;
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .mode-copy {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .mode-option.active .mode-copy {
+        color: #344054;
+      }
+
+      .form-block + .form-block {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--soft);
+      }
+
+      .form-block-title {
+        font-size: 13px;
+        color: #475467;
+        font-weight: 800;
+      }
+
+      .form-block label:first-of-type {
+        margin-top: 10px;
+      }
+
+      .file-input-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .file-input-grid label {
+        margin-top: 10px;
+      }
+
+      .start-action {
+        min-width: 190px;
+      }
+
+      .workflow-list {
+        display: grid;
+        gap: 14px;
+        margin: 18px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .workflow-list li {
+        display: grid;
+        grid-template-columns: 26px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+      }
+
+      .workflow-number {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--primary-soft);
+        color: var(--primary);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .workflow-list strong,
+      .workflow-list span {
+        display: block;
+      }
+
+      .workflow-list span {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
       .primary {
         background: var(--primary);
         color: #ffffff;
@@ -887,7 +1049,8 @@
 
         .status-strip,
         .grid.two,
-        .result-grid {
+        .result-grid,
+        .create-main {
           grid-template-columns: 1fr;
         }
 
@@ -925,7 +1088,9 @@
         .topbar,
         .history-item,
         .row,
-        .checks {
+        .checks,
+        .mode-picker,
+        .file-input-grid {
           grid-template-columns: 1fr;
           display: grid;
         }
@@ -981,74 +1146,105 @@
         </div>
 
         <section class="section active" id="view-create">
-          <div class="grid two">
+          <div class="create-shell">
             <div class="panel">
-              <h2>任务配置</h2>
-              <div class="row">
+              <div class="section-heading">
                 <div>
-                  <label for="language">语言</label>
+                  <h2>选择评审方式</h2>
+                  <p class="subtitle">一次只使用一种输入，切换后仅显示当前需要填写的内容。</p>
+                </div>
+              </div>
+              <div class="mode-picker" role="group" aria-label="评审方式">
+                <button class="mode-option active" type="button" data-review-mode="file" aria-pressed="true">
+                  <span class="mode-icon">F</span>
+                  <span>
+                    <span class="mode-title">单文件评审</span>
+                    <span class="mode-copy">上传一个源码文件，可附带相关测试文件。适合快速检查独立代码。</span>
+                  </span>
+                </button>
+                <button class="mode-option" type="button" data-review-mode="repository" aria-pressed="false">
+                  <span class="mode-icon">R</span>
+                  <span>
+                    <span class="mode-title">本地仓库评审</span>
+                    <span class="mode-copy">填写本地项目目录，基于分支差异执行完整评审流程。</span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <div class="create-main">
+              <div class="panel">
+                <div class="form-block" id="file-mode-fields">
+                  <div class="form-block-title">上传评审文件</div>
+                  <div class="file-input-grid">
+                    <div>
+                      <label for="review-file">主代码文件</label>
+                      <input id="review-file" type="file" />
+                    </div>
+                    <div>
+                      <label for="review-test-files">关联测试文件（可多选）</label>
+                      <input id="review-test-files" type="file" multiple />
+                    </div>
+                  </div>
+                  <p class="input-help">测试文件是可选项，会与主代码一起放入隔离的临时 Git 工作区。</p>
+                </div>
+
+                <div class="form-block" id="repository-mode-fields" hidden>
+                  <div class="form-block-title">填写仓库信息</div>
+                  <label for="repo">本地项目目录</label>
+                  <input id="repo" placeholder="例如 D:\profile\diff-test-project" />
+
+                  <label for="base-branch">对比的基础分支</label>
+                  <input id="base-branch" value="main" placeholder="main / master / develop" />
+                  <p class="input-help">系统将评审基础分支与当前 HEAD 之间的变更。</p>
+                </div>
+
+                <div class="form-block">
+                  <div class="form-block-title">检查设置</div>
+                  <label for="language">代码语言</label>
                   <select id="language">
                     <option value="python">Python</option>
                     <option value="javascript">JavaScript</option>
                     <option value="typescript">TypeScript</option>
                     <option value="java">Java</option>
                   </select>
+
+                  <div class="checks">
+                    <label class="check" for="run-static">
+                      <input id="run-static" type="checkbox" checked />
+                      静态分析
+                    </label>
+                    <label class="check" for="run-tests">
+                      <input id="run-tests" type="checkbox" checked />
+                      自动测试
+                    </label>
+                  </div>
                 </div>
-                <div>
-                  <label for="base-branch">基础分支</label>
-                  <input id="base-branch" value="main" placeholder="main / master / develop" />
-                </div>
-              </div>
 
-              <label for="repo">本地项目目录</label>
-              <input id="repo" placeholder="D:\profile\diff-test-project" />
-
-              <label for="review-file">单个代码文件</label>
-              <input id="review-file" type="file" />
-
-              <label for="review-test-files">关联测试文件（可多选）</label>
-              <input id="review-test-files" type="file" multiple />
-              <p class="input-help">例如同时选择 test_buggy_business_logic.py；这些文件会与主源码一起进入临时 Git 工作区。</p>
-
-              <div class="checks">
-                <label class="check" for="run-static">
-                  <input id="run-static" type="checkbox" checked />
-                  静态分析
-                </label>
-                <label class="check" for="run-tests">
-                  <input id="run-tests" type="checkbox" checked />
-                  自动测试
-                </label>
-              </div>
-
-              <div class="actions">
-                <button class="primary" id="start-review" type="button">开始评审</button>
-                <button class="secondary" id="review-file-only" type="button">评审所选文件</button>
-                <button class="secondary" id="run-tests-only" type="button">只运行测试</button>
-              </div>
-            </div>
-
-            <div class="panel">
-              <h2>当前能力</h2>
-              <p class="subtitle">目录和单文件都会先收集 Git diff、静态分析和测试证据，再交给 DeepSeek 综合评审；非 Git 目录不会扫描整仓源码。</p>
-              <div class="status-strip" style="grid-template-columns: 1fr 1fr; margin-top: 14px">
-                <div class="metric">
-                  <span>输入</span>
-                  <strong>目录 / 文件</strong>
-                </div>
-                <div class="metric">
-                  <span>分析</span>
-                  <strong>Diff</strong>
-                </div>
-                <div class="metric">
-                  <span>测试</span>
-                  <strong>pytest</strong>
-                </div>
-                <div class="metric">
-                  <span>报告</span>
-                  <strong>MD / PDF</strong>
+                <div class="actions">
+                  <button class="primary start-action" id="start-review" type="button">开始单文件评审</button>
+                  <button class="secondary" id="run-tests-only" type="button" hidden>只运行仓库测试</button>
                 </div>
               </div>
+
+              <aside class="panel">
+                <h2 id="flow-title">单文件评审流程</h2>
+                <p class="subtitle" id="mode-note">无需填写本地路径，上传内容会在隔离环境中运行。</p>
+                <ol class="workflow-list">
+                  <li>
+                    <span class="workflow-number">1</span>
+                    <div><strong>准备变更</strong><span id="flow-step-one">创建临时 Git 工作区和 diff</span></div>
+                  </li>
+                  <li>
+                    <span class="workflow-number">2</span>
+                    <div><strong>本地检查</strong><span>运行静态分析和自动化测试</span></div>
+                  </li>
+                  <li>
+                    <span class="workflow-number">3</span>
+                    <div><strong>综合评审</strong><span>DeepSeek 汇总证据并生成报告</span></div>
+                  </li>
+                </ol>
+              </aside>
             </div>
           </div>
         </section>
@@ -1125,6 +1321,7 @@
     <script>
       const state = {
         currentView: "create",
+        reviewMode: "file",
         review: null,
         diff: null,
         diffNotice: "",
@@ -1151,8 +1348,10 @@
       $$(".nav button").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
       });
+      $$('[data-review-mode]').forEach((button) => {
+        button.addEventListener("click", () => setReviewMode(button.dataset.reviewMode));
+      });
       $("#start-review").addEventListener("click", runSelectedReview);
-      $("#review-file-only").addEventListener("click", runFileReview);
       $("#run-tests-only").addEventListener("click", runTestsOnly);
       $("#export-from-result").addEventListener("click", () => setView("report"));
       $("#download-md").addEventListener("click", downloadMarkdown);
@@ -1162,6 +1361,7 @@
       init();
 
       async function init() {
+        setReviewMode(state.reviewMode);
         renderAll();
         try {
           const health = await readJson(await fetch("/api/health"));
@@ -1186,27 +1386,34 @@
       }
 
       async function runSelectedReview() {
-        const repositoryPath = $("#repo").value.trim();
-        const file = $("#review-file").files?.[0];
-        const relatedFiles = Array.from($("#review-test-files").files || []);
-
-        if (repositoryPath && (file || relatedFiles.length)) {
-          showError("本地项目目录和单文件不能同时评审，请保留其中一种输入。");
-          return;
-        }
-        if (file) {
+        if (state.reviewMode === "file") {
           await runFileReview();
           return;
         }
-        if (repositoryPath) {
-          await runReview();
-          return;
-        }
-        if (relatedFiles.length) {
-          showError("已选择关联测试文件，请再选择一个主源码文件。");
-          return;
-        }
-        showError("请填写本地项目目录，或选择一个代码文件。");
+        await runReview();
+      }
+
+      function setReviewMode(mode) {
+        const normalizedMode = mode === "repository" ? "repository" : "file";
+        state.reviewMode = normalizedMode;
+        $$('[data-review-mode]').forEach((button) => {
+          const active = button.dataset.reviewMode === normalizedMode;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+
+        const repositoryMode = normalizedMode === "repository";
+        $("#file-mode-fields").hidden = repositoryMode;
+        $("#repository-mode-fields").hidden = !repositoryMode;
+        $("#run-tests-only").hidden = !repositoryMode;
+        $("#start-review").textContent = repositoryMode ? "开始仓库评审" : "开始单文件评审";
+        $("#flow-title").textContent = repositoryMode ? "本地仓库评审流程" : "单文件评审流程";
+        $("#mode-note").textContent = repositoryMode
+          ? "使用本地目录和基础分支，优先评审真实 Git 变更。"
+          : "无需填写本地路径，上传内容会在隔离环境中运行。";
+        $("#flow-step-one").textContent = repositoryMode
+          ? "读取基础分支与当前 HEAD 的 diff"
+          : "创建临时 Git 工作区和 diff";
       }
 
       async function runReview() {
@@ -2242,8 +2449,10 @@
 
       function setBusy(isBusy) {
         $("#start-review").disabled = isBusy;
-        $("#review-file-only").disabled = isBusy;
         $("#run-tests-only").disabled = isBusy;
+        $$('[data-review-mode]').forEach((button) => {
+          button.disabled = isBusy;
+        });
       }
 
       function scoreReview(issues, test) {
