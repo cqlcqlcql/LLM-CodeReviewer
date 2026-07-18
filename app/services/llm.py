@@ -20,13 +20,18 @@ REVIEW_JSON_SCHEMA = {
                 "properties": {
                     "file_path": {"type": ["string", "null"]},
                     "source": {"type": "string"},
+                    "evidence_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
                     "severity": {"type": "string", "enum": ["low", "medium", "high"]},
                     "category": {"type": "string"},
                     "line": {"type": ["integer", "null"]},
                     "message": {"type": "string"},
                     "suggestion": {"type": "string"},
                 },
-                "required": ["file_path", "source", "severity", "category", "line", "message", "suggestion"],
+                "required": ["file_path", "evidence_sources", "severity", "category", "line", "message", "suggestion"],
             },
         },
     },
@@ -44,10 +49,6 @@ REVIEW_POLICY = """Review policy:
 
 class CodeReviewer(ABC):
     @abstractmethod
-    async def review(self, language: str, code: str) -> ReviewResponse:
-        raise NotImplementedError
-
-    @abstractmethod
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         raise NotImplementedError
 
@@ -56,6 +57,7 @@ class CodeReviewer(ABC):
         self,
         language: str,
         diff_context: str | None,
+        source_context: str | None,
         static_issues: list[ReviewIssue],
         test_result: TestRunResponse | None,
     ) -> ReviewResponse:
@@ -76,30 +78,6 @@ class DeepSeekReviewer(CodeReviewer):
             base_url=settings.deepseek_base_url,
         )
 
-    async def review(self, language: str, code: str) -> ReviewResponse:
-        prompt = f"""
-Please act as a careful code review assistant and inspect the following {language} code.
-Every issue must use source exactly as "LLM".
-Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
-Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
-
-Focus on:
-1. Logic bugs
-2. Potential runtime exceptions
-3. Security issues
-4. Maintainability issues
-5. Whether names and behavior match
-
-{REVIEW_POLICY}
-
-Code:
-```{language}
-{code}
-```
-""".strip()
-
-        return _force_issue_source(await self._complete_review(prompt), "LLM")
-
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         prompt = f"""
 You are a code review assistant.
@@ -109,7 +87,7 @@ Do not comment on unchanged context lines or removed lines.
 Do not give generic advice.
 {REVIEW_POLICY}
 Every issue must include file_path, line, severity, reason in message, and suggestion.
-Every issue must use source exactly as "LLM".
+Every issue must use evidence_sources exactly as ["LLM"].
 Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
 If there are no real issues, return an empty issues array.
 Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
@@ -128,6 +106,7 @@ Diff context:
         self,
         language: str,
         diff_context: str | None,
+        source_context: str | None,
         static_issues: list[ReviewIssue],
         test_result: TestRunResponse | None,
     ) -> ReviewResponse:
@@ -138,16 +117,17 @@ Return one deduplicated issue list.
 
 Rules:
 - Treat the Git diff as the primary code context when it exists.
-- If Git diff is unavailable, do not mention that as a problem; use static analysis and test evidence only.
+- If Git diff is unavailable, review the bounded source snapshot when provided.
+- If both Git diff and source snapshot are unavailable, use static analysis and test evidence only.
 - Static-analysis findings are tool evidence. Keep them when they identify a real issue, but merge them with duplicate LLM or test findings.
 - Test failures are evidence about runtime behavior. If a test failure and a diff issue point to the same root cause, return one issue and mention both signals in the message or suggestion.
 - Do not create a separate pytest issue when the same bug is already represented by a code issue.
 - Do not comment on unchanged context lines or removed lines unless needed to explain an added or modified line.
 - Do not give generic advice.
 - {REVIEW_POLICY.replace(chr(10), chr(10) + "- ")}
-- Every issue must include file_path, source, line, severity, category, message, and suggestion.
+- Every issue must include file_path, evidence_sources, line, severity, category, message, and suggestion.
 - Write summary, message, and suggestion in Simplified Chinese for the product UI. Keep code identifiers, file names, function names, test names, and literal values in their original form.
-- Use source values like "LLM", "ruff", "mypy", "bandit", "pytest + LLM", or "LLM + pytest" to reflect the strongest evidence.
+- Use evidence_sources arrays like ["LLM"], ["ruff"], or ["pytest", "LLM"] to reflect all evidence supporting each issue.
 - If there are no real issues, return an empty issues array.
 - Return only JSON, with no Markdown or explanatory wrapper. JSON must match this schema: {json.dumps(REVIEW_JSON_SCHEMA, ensure_ascii=False)}
 
@@ -156,6 +136,11 @@ Language: {language}
 Git diff context:
 ```text
 {diff_context or "Git diff unavailable or skipped."}
+```
+
+Bounded source snapshot:
+```{language}
+{source_context or "Source snapshot unavailable or disabled."}
 ```
 
 Static analysis issues:
@@ -272,6 +257,7 @@ def build_reviewer(settings: Settings) -> CodeReviewer:
 
 def _force_issue_source(response: ReviewResponse, source: str) -> ReviewResponse:
     for issue in response.issues:
+        issue.evidence_sources = [source]
         issue.source = source
     return response
 

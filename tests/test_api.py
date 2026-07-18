@@ -14,11 +14,20 @@ from app.settings import Settings
 client = TestClient(app)
 
 
-def test_health_reports_deepseek():
+def test_health_reports_deepseek(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(DEEPSEEK_API_KEY="test-key"),
+    )
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "provider": "deepseek"}
+    assert response.json() == {
+        "status": "ok",
+        "provider": "deepseek",
+        "provider_configured": True,
+    }
 
 
 def test_build_reviewer_only_uses_deepseek():
@@ -27,16 +36,14 @@ def test_build_reviewer_only_uses_deepseek():
     assert isinstance(reviewer, DeepSeekReviewer)
 
 
-def test_direct_code_review_uses_injected_test_reviewer():
+def test_review_requires_repository_path():
     response = client.post(
         "/api/review",
         json={"language": "python", "code": "def add(a, b):\n    return a - b\n"},
     )
 
-    assert response.status_code == 200
-    issue = response.json()["issues"][0]
-    assert issue["category"] == "logic_bug"
-    assert issue["source"] == "LLM"
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "repository_path"]
 
 
 def test_single_file_review_uses_isolated_git_diff():
@@ -111,7 +118,9 @@ def test_single_file_review_runs_uploaded_related_pytest_file():
 
 def test_single_file_review_preserves_pytest_result_when_deepseek_fails(monkeypatch):
     class FailingReviewer:
-        async def review_repository(self, language, diff_context, static_issues, test_result):
+        async def review_repository(
+            self, language, diff_context, source_context, static_issues, test_result
+        ):
             raise HTTPException(status_code=502, detail="invalid structured JSON")
 
     monkeypatch.setattr(main_module, "build_reviewer", lambda settings: FailingReviewer())
@@ -233,13 +242,8 @@ def test_repository_diff_returns_changed_file_summary(tmp_path):
     ]
 
 
-def test_non_git_directory_skips_full_source_scan(tmp_path, monkeypatch):
+def test_non_git_directory_reviews_bounded_source_snapshot(tmp_path):
     (tmp_path / "large_source.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("non-Git source scanning must not run")
-
-    monkeypatch.setattr("app.services.code_loader.load_repository_code", fail_if_called)
     response = client.post(
         "/api/review",
         json={
@@ -252,11 +256,38 @@ def test_non_git_directory_skips_full_source_scan(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
+    assert data["issues"][0]["file_path"] == "large_source.py"
+    assert data["issues"][0]["evidence_sources"] == ["LLM"]
+    assert data["generated_by"] == "deepseek"
+    assert data["llm_status"] == "succeeded"
+    assert data["code_context"] == "source_snapshot"
+    assert data["context_files"] == 1
+    assert data["context_chars"] > 0
+    assert data["notices"][0] == "Path is not a Git repository; skipped Git diff review."
+    assert data["notices"][1].startswith("Reviewed a bounded source snapshot: 1 file(s)")
+
+
+def test_non_git_directory_can_disable_source_snapshot(tmp_path):
+    (tmp_path / "large_source.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    response = client.post(
+        "/api/review",
+        json={
+            "language": "python",
+            "repository_path": str(tmp_path),
+            "run_static_analysis": False,
+            "run_tests": False,
+            "include_source_context": False,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
     assert data["issues"] == []
-    assert data["summary"] == "No review evidence was collected."
+    assert data["llm_status"] == "skipped"
+    assert data["code_context"] == "none"
     assert data["notices"] == [
         "Path is not a Git repository; skipped Git diff review.",
-        "Full-source scanning was skipped for this non-Git directory.",
+        "Source snapshot was disabled; only local tool and test evidence was used.",
     ]
 
 
@@ -297,6 +328,7 @@ def test_non_git_directory_can_use_static_and_test_evidence(tmp_path, monkeypatc
     assert response.status_code == 200
     data = response.json()
     assert data["issues"][0]["source"] == "ruff"
+    assert data["issues"][0]["evidence_sources"] == ["ruff"]
     assert data["test_result"]["test_status"] == "passed"
     assert data["test_result"]["collected_cases"] == 1
     assert data["test_result"]["passed_cases"] == 1

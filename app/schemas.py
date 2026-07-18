@@ -5,16 +5,40 @@ from pydantic import BaseModel, Field, model_validator
 
 Severity = Literal["low", "medium", "high"]
 TestStatus = Literal["passed", "failed", "no_tests", "timeout", "unsupported", "error"]
+LlmStatus = Literal["succeeded", "failed", "skipped"]
+CodeContext = Literal[
+    "git_diff",
+    "source_snapshot",
+    "test_logs_only",
+    "local_evidence_only",
+    "none",
+]
 
 
 class ReviewIssue(BaseModel):
     file_path: str | None = None
-    source: str = Field(default="LLM", description="Tool or reviewer that reported the issue")
+    source: str = Field(default="LLM", description="Deprecated display alias derived from evidence_sources")
+    evidence_sources: list[str] = Field(
+        default_factory=list,
+        description="Evidence that supports the issue, such as pytest, ruff, or LLM",
+    )
     severity: Severity
     category: str
     line: int | None = Field(default=None, ge=1)
     message: str
     suggestion: str
+
+    @model_validator(mode="after")
+    def normalize_evidence_sources(self) -> "ReviewIssue":
+        sources = self.evidence_sources or self.source.split("+")
+        normalized: list[str] = []
+        for source in sources:
+            value = source.strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        self.evidence_sources = normalized or ["LLM"]
+        self.source = " + ".join(self.evidence_sources)
+        return self
 
 
 class ReviewResponse(BaseModel):
@@ -22,22 +46,23 @@ class ReviewResponse(BaseModel):
     issues: list[ReviewIssue]
     notices: list[str] = Field(default_factory=list, description="Non-issue status messages for the review run")
     test_result: "TestRunResponse | None" = None
+    generated_by: str | None = Field(default=None, description="Provider that generated the synthesized review")
+    llm_status: LlmStatus = "skipped"
+    code_context: CodeContext = "none"
+    context_files: int = Field(default=0, ge=0)
+    context_chars: int = Field(default=0, ge=0)
 
 
 class ReviewRequest(BaseModel):
     language: str = Field(default="python", examples=["python"])
-    code: str | None = Field(default=None, examples=["def add(a,b): return a-b"])
-    repository_path: str | None = Field(default=None, description="Local Git repository path")
+    repository_path: str = Field(description="Local Git or non-Git project path")
     base_branch: str = Field(default="main", description="Git base branch used for repository diff reviews")
     run_tests: bool = Field(default=False, description="Run project tests for repository reviews")
     run_static_analysis: bool = Field(default=True, description="Run local static analysis tools for repository reviews")
-
-    @model_validator(mode="after")
-    def require_code_or_repository(self) -> "ReviewRequest":
-        if not self.code and not self.repository_path:
-            raise ValueError("code or repository_path is required")
-        return self
-
+    include_source_context: bool = Field(
+        default=True,
+        description="Send a bounded source snapshot when the directory is not a Git repository",
+    )
 
 class TestRunRequest(BaseModel):
     repository_path: str = Field(description="Local project path")
