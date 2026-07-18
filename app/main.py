@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.schemas import (
     ChangedFileSummary,
+    CodeContext,
     DiffRequest,
     DiffResponse,
     ReviewIssue,
@@ -14,7 +15,11 @@ from app.schemas import (
     TestRunRequest,
     TestRunResponse,
 )
-from app.services.code_loader import trim_code
+from app.services.code_loader import (
+    RepositorySourceContext,
+    extract_referenced_source_paths,
+    load_repository_source_context,
+)
 from app.services.diff_loader import load_repository_diff, load_repository_unified_diff, parse_unified_diff
 from app.services.llm import CodeReviewer, build_reviewer
 from app.services.single_file_workspace import single_file_repository
@@ -41,31 +46,29 @@ async def index() -> FileResponse:
 
 
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "provider": "deepseek"}
+async def health() -> dict[str, str | bool]:
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "provider": "deepseek",
+        "provider_configured": bool(settings.deepseek_api_key),
+    }
 
 
 @app.post("/api/review", response_model=ReviewResponse)
-async def review_code(payload: ReviewRequest) -> ReviewResponse:
+async def review_repository(payload: ReviewRequest) -> ReviewResponse:
     settings = get_settings()
     reviewer = build_reviewer(settings)
-    if payload.repository_path:
-        return await _review_repository_path(
-            repository_path=payload.repository_path,
-            language=payload.language,
-            base_branch=payload.base_branch,
-            static_analysis_enabled=payload.run_static_analysis,
-            tests_enabled=payload.run_tests,
-            reviewer=reviewer,
-            max_code_chars=settings.max_code_chars,
-        )
-
-    code = payload.code
-    assert code is not None
-
-    trimmed_code = trim_code(code, settings.max_code_chars)
-    response = await reviewer.review(payload.language, trimmed_code)
-    return response
+    return await _review_repository_path(
+        repository_path=payload.repository_path,
+        language=payload.language,
+        base_branch=payload.base_branch,
+        static_analysis_enabled=payload.run_static_analysis,
+        tests_enabled=payload.run_tests,
+        include_source_context=payload.include_source_context,
+        reviewer=reviewer,
+        max_code_chars=settings.max_code_chars,
+    )
 
 
 @app.post("/api/review/file", response_model=ReviewResponse)
@@ -89,6 +92,7 @@ async def review_file(
             base_branch="main",
             static_analysis_enabled=run_static_analysis,
             tests_enabled=run_tests,
+            include_source_context=True,
             reviewer=reviewer,
             max_code_chars=settings.max_code_chars,
         )
@@ -106,6 +110,7 @@ async def _review_repository_path(
     base_branch: str,
     static_analysis_enabled: bool,
     tests_enabled: bool,
+    include_source_context: bool,
     reviewer: CodeReviewer,
     max_code_chars: int,
 ) -> ReviewResponse:
@@ -113,6 +118,8 @@ async def _review_repository_path(
     notices: list[str] = []
     static_issues: list[ReviewIssue] = []
     test_result: TestRunResponse | None = None
+    source_snapshot: RepositorySourceContext | None = None
+    non_git_directory = False
 
     try:
         diff_context = load_repository_diff(repository_path, max_code_chars, base_branch)
@@ -121,7 +128,7 @@ async def _review_repository_path(
             raise
         notices.append(_diff_unavailable_notice(exc, base_branch))
         if _is_non_git_repository_error(exc):
-            notices.append("Full-source scanning was skipped for this non-Git directory.")
+            non_git_directory = True
 
     if static_analysis_enabled:
         static_issues = run_static_analysis(repository_path, language)
@@ -135,9 +142,41 @@ async def _review_repository_path(
             explain_failures=False,
         )
 
-    if diff_context is not None or static_issues or test_result is not None:
+    if non_git_directory and include_source_context:
+        preferred_paths = {
+            issue.file_path for issue in static_issues if issue.file_path is not None
+        }
+        if test_result is not None:
+            preferred_paths.update(extract_referenced_source_paths(test_result.log_excerpt))
         try:
-            response = await reviewer.review_repository(language, diff_context, static_issues, test_result)
+            source_snapshot = load_repository_source_context(
+                repository_path,
+                language,
+                max_code_chars,
+                preferred_paths,
+            )
+            truncation = " (truncated to the configured limit)" if source_snapshot.truncated else ""
+            notices.append(
+                f"Reviewed a bounded source snapshot: {len(source_snapshot.files)} file(s), "
+                f"{source_snapshot.chars} characters{truncation}."
+            )
+        except HTTPException as exc:
+            notices.append(f"Source snapshot was unavailable: {exc.detail}")
+    elif non_git_directory:
+        notices.append("Source snapshot was disabled; only local tool and test evidence was used.")
+
+    source_context = source_snapshot.content if source_snapshot is not None else None
+    if diff_context is not None or source_context is not None or static_issues or test_result is not None:
+        try:
+            response = await reviewer.review_repository(
+                language,
+                diff_context,
+                source_context,
+                static_issues,
+                test_result,
+            )
+            response.generated_by = "deepseek"
+            response.llm_status = "succeeded"
         except HTTPException as exc:
             if exc.status_code != 502:
                 raise
@@ -147,14 +186,39 @@ async def _review_repository_path(
                 notices=[
                     "DeepSeek 综合分析暂时失败；已保留本地静态分析和自动化测试结果。"
                 ],
+                generated_by="deepseek",
+                llm_status="failed",
             )
     else:
         response = ReviewResponse(summary="No review evidence was collected.", issues=[])
 
     response.notices.extend(notices)
+    response.code_context = _review_code_context(diff_context, source_snapshot, static_issues, test_result)
+    if diff_context is not None:
+        response.context_chars = len(diff_context)
+    elif source_snapshot is not None:
+        response.context_files = len(source_snapshot.files)
+        response.context_chars = source_snapshot.chars
     if test_result is not None:
         response.test_result = test_result
     return response
+
+
+def _review_code_context(
+    diff_context: str | None,
+    source_snapshot: RepositorySourceContext | None,
+    static_issues: list[ReviewIssue],
+    test_result: TestRunResponse | None,
+) -> CodeContext:
+    if diff_context is not None:
+        return "git_diff"
+    if source_snapshot is not None:
+        return "source_snapshot"
+    if test_result is not None and not static_issues:
+        return "test_logs_only"
+    if test_result is not None or static_issues:
+        return "local_evidence_only"
+    return "none"
 
 
 @app.post("/api/test", response_model=TestRunResponse)

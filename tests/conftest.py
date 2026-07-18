@@ -9,12 +9,6 @@ from app.schemas import ReviewIssue, ReviewResponse
 class DeterministicTestReviewer:
     """Network-free reviewer used only by the automated test suite."""
 
-    async def review(self, language: str, code: str) -> ReviewResponse:
-        issue = self._find_add_subtract(code)
-        if issue:
-            return ReviewResponse(summary="Function name does not match behavior.", issues=[issue])
-        return ReviewResponse(summary="No review issues found.", issues=[])
-
     async def review_diff(self, language: str, diff_context: str) -> ReviewResponse:
         issue = self._find_add_subtract(diff_context)
         if issue:
@@ -41,6 +35,7 @@ class DeterministicTestReviewer:
         self,
         language: str,
         diff_context: str | None,
+        source_context: str | None,
         static_issues: list[ReviewIssue],
         test_result,
     ) -> ReviewResponse:
@@ -48,6 +43,11 @@ class DeterministicTestReviewer:
         if diff_context:
             diff_response = await self.review_diff(language, diff_context)
             issues.extend(diff_response.issues)
+        elif source_context:
+            issue = self._find_add_subtract(source_context)
+            if issue:
+                issue.file_path = self._source_file(source_context)
+                issues.append(issue)
         if test_result and test_result.test_status == "failed" and not any(
             issue.category in {"logic_bug", "test_failure"} for issue in issues
         ):
@@ -97,6 +97,11 @@ class DeterministicTestReviewer:
         if not match:
             match = re.search(r"ADDED new_line=(\d+):", diff_context)
         return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _source_file(source_context: str) -> str | None:
+        match = re.search(r"^# File:\s+(.+)$", source_context, flags=re.MULTILINE)
+        return match.group(1).strip() if match else None
 
 
 @pytest.fixture(autouse=True)

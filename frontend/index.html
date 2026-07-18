@@ -160,7 +160,7 @@
       }
 
       .status-strip {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         margin-bottom: 14px;
       }
 
@@ -647,6 +647,44 @@
         gap: 10px;
         overflow: auto;
         min-height: 0;
+      }
+
+      .context-overview {
+        margin-top: 14px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .context-facts {
+        display: grid;
+        border-top: 1px solid var(--border);
+      }
+
+      .context-fact {
+        display: grid;
+        grid-template-columns: 88px minmax(0, 1fr);
+        gap: 12px;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .context-fact span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .context-fact strong {
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+
+      .context-note {
+        margin: 14px 0 0;
+        color: #475467;
+        font-size: 13px;
+        line-height: 1.6;
       }
 
       .change-overview,
@@ -1197,6 +1235,13 @@
                   <label for="base-branch">对比的基础分支</label>
                   <input id="base-branch" value="main" placeholder="main / master / develop" />
                   <p class="input-help">系统将评审基础分支与当前 HEAD 之间的变更。</p>
+                  <div class="checks">
+                    <label class="check" for="include-source-context">
+                      <input id="include-source-context" type="checkbox" checked />
+                      非 Git 目录发送受限源码快照
+                    </label>
+                  </div>
+                  <p class="input-help">仅发送匹配语言的源码，并排除测试、依赖、构建目录和常见敏感文件；内容受总字符上限约束。</p>
                 </div>
 
                 <div class="form-block">
@@ -1261,7 +1306,10 @@
             <div class="metric"><span>总体评分</span><strong id="score">-</strong></div>
             <div class="metric"><span>问题数量</span><strong id="issue-count">0</strong></div>
             <div class="metric"><span>测试状态</span><strong id="test-status">未运行</strong></div>
-            <div class="metric"><span>问题来源</span><strong id="source-count">-</strong></div>
+            <div class="metric"><span>证据来源</span><strong id="source-count">-</strong></div>
+            <div class="metric" title="表示本次模型调用是否完成，不代表测试通过，也不代表评审结论一定正确。">
+              <span>模型综合</span><strong id="analysis-status">-</strong>
+            </div>
           </div>
 
           <div class="result-grid" id="result-grid">
@@ -1365,8 +1413,10 @@
         renderAll();
         try {
           const health = await readJson(await fetch("/api/health"));
-          $("#provider").textContent = `后端在线 / ${health.provider}`;
-          $("#provider").className = "badge passed";
+          $("#provider").textContent = health.provider_configured
+            ? "后端在线 / DeepSeek 已配置"
+            : "后端在线 / DeepSeek 未配置";
+          $("#provider").className = health.provider_configured ? "badge passed" : "badge medium";
         } catch {
           $("#provider").textContent = "后端未连接";
           $("#provider").className = "badge failed";
@@ -1382,6 +1432,7 @@
           base_branch: $("#base-branch").value.trim() || "main",
           run_static_analysis: $("#run-static").checked,
           run_tests: $("#run-tests").checked,
+          include_source_context: $("#include-source-context").checked,
         };
       }
 
@@ -1409,7 +1460,7 @@
         $("#start-review").textContent = repositoryMode ? "开始仓库评审" : "开始单文件评审";
         $("#flow-title").textContent = repositoryMode ? "本地仓库评审流程" : "单文件评审流程";
         $("#mode-note").textContent = repositoryMode
-          ? "使用本地目录和基础分支，优先评审真实 Git 变更。"
+          ? "优先评审真实 Git 变更；非 Git 目录可改用受限源码快照。"
           : "无需填写本地路径，上传内容会在隔离环境中运行。";
         $("#flow-step-one").textContent = repositoryMode
           ? "读取基础分支与当前 HEAD 的 diff"
@@ -1727,27 +1778,27 @@
         const displayedIssues = enrichIssues(issues);
         const hasDiff = Boolean(state.diff?.diff);
         $("#result-grid").classList.toggle("no-diff", !hasDiff);
-        $("#context-title").textContent = hasDiff ? "变更摘要" : "项目上下文";
+        $("#context-title").textContent = hasDiff ? "变更摘要" : "评审上下文";
         $("#summary").textContent = displaySummary(review, displayedIssues);
         $("#issue-count").textContent = String(displayedIssues.length);
         $("#score").textContent = scoreReview(displayedIssues, state.test);
         $("#test-status").textContent = state.test ? labelStatus(state.test.test_status) : "未运行";
         $("#source-count").textContent = summarizeSources(displayedIssues);
+        $("#analysis-status").textContent = formatAnalysisStatus(review);
 
         const fileList = $("#file-list");
         const files = state.diff?.files || [];
-        fileList.innerHTML = files.length
-          ? files
-              .map(
-                (file) =>
-                  `<span class="file-pill">${escapeHtml(file.path)} +${file.additions} -${file.deletions}</span>`,
-              )
-              .join("")
-          : `<span class="muted">${escapeHtml(state.diffNotice || "没有可显示的 diff。请查看静态分析和测试结果。")}</span>`;
+        fileList.hidden = !files.length;
+        fileList.innerHTML = files
+          .map(
+            (file) =>
+              `<span class="file-pill">${escapeHtml(file.path)} +${file.additions} -${file.deletions}</span>`,
+          )
+          .join("");
 
         $("#diff-view").innerHTML = state.diff?.diff
           ? renderDiffSummary(state.diff)
-          : `<div class="empty">${escapeHtml(state.diffNotice || "本次没有 diff 上下文。")}</div>`;
+          : renderContextOverview(review);
 
         const issueList = $("#issue-list");
         if (!displayedIssues.length) {
@@ -1768,7 +1819,7 @@
               <span class="badge">${escapeHtml(location)}</span>
             </div>
             <div class="field"><strong>问题</strong><p>${escapeHtml(issue.message)}</p></div>
-            <div class="field"><strong>来源</strong><p>${escapeHtml(issue.source || "LLM")}</p></div>
+            <div class="field"><strong>证据来源</strong><p>${escapeHtml(issueEvidenceSources(issue).join(" + "))}</p></div>
             ${renderEvidence(issue)}
           </article>
         `;
@@ -1779,7 +1830,7 @@
           if (issue.evidence) return issue;
           const evidence = findDiffEvidence(issue);
           if (evidence.length) return { ...issue, evidence_label: "代码切片", evidence };
-          if (String(issue.source || "").toLowerCase().includes("pytest")) {
+          if (issueEvidenceSources(issue).some((source) => source.toLowerCase().includes("pytest"))) {
             const logEvidence = findLogEvidence(issue.location_label || issue.message || "assert");
             const logLocation = issue.location_label || formatPytestLocation(findPytestLocation());
             if (logEvidence.length) {
@@ -1881,7 +1932,7 @@
         if (issue.file_path && issue.line) return `${issue.file_path}:${issue.line}`;
         if (issue.file_path) return issue.file_path;
         if (issue.line) return `第 ${issue.line} 行`;
-        if (String(issue.source || "").toLowerCase().includes("pytest")) return "测试日志";
+        if (issueEvidenceSources(issue).some((source) => source.toLowerCase().includes("pytest"))) return "测试日志";
         return "项目证据";
       }
 
@@ -2379,6 +2430,9 @@
           `- Score: ${scoreReview(issues, state.test)}`,
           `- Issues: ${issues.length}`,
           `- Test status: ${state.test ? labelStatus(state.test.test_status) : "未运行"}`,
+          `- Evidence sources: ${summarizeSources(issues)}`,
+          `- Synthesized by: ${formatAnalysisStatus(review)}`,
+          `- Code context: ${contextSummary(review)}`,
           "",
           "## Issues",
           "",
@@ -2392,7 +2446,7 @@
               `### ${index + 1}. ${formatSeverity(issue.severity)} / ${formatCategory(issue.category)}`,
               "",
               `- Location: ${formatIssueLocation(issue)}`,
-              `- Source: ${issue.source || "LLM"}`,
+              `- Evidence: ${issueEvidenceSources(issue).join(" + ")}`,
               `- Problem: ${issue.message}`,
               `- Suggestion: ${issue.suggestion}`,
               "",
@@ -2463,9 +2517,86 @@
       }
 
       function summarizeSources(issues) {
-        const sources = new Set(issues.map((issue) => issue.source || "LLM"));
+        const sources = new Set(issues.flatMap(issueEvidenceSources));
         const summary = sources.size ? Array.from(sources).join(" + ") : "-";
         return summary.length > 42 ? `${summary.slice(0, 39)}...` : summary;
+      }
+
+      function issueEvidenceSources(issue) {
+        if (Array.isArray(issue?.evidence_sources) && issue.evidence_sources.length) {
+          return issue.evidence_sources;
+        }
+        return String(issue?.source || "LLM")
+          .split("+")
+          .map((source) => source.trim())
+          .filter(Boolean);
+      }
+
+      function formatAnalysisStatus(review) {
+        if (!review || review.llm_status === "skipped") return "未调用模型";
+        const provider = review.generated_by === "deepseek" ? "DeepSeek" : (review.generated_by || "LLM");
+        return review.llm_status === "succeeded" ? `${provider} 已完成` : `${provider} 调用失败`;
+      }
+
+      function renderContextOverview(review) {
+        const context = contextDetails(review);
+        return `
+          <div class="context-overview">
+            <div class="context-facts">
+              <div class="context-fact"><span>上下文类型</span><strong>${escapeHtml(context.label)}</strong></div>
+              <div class="context-fact"><span>发送规模</span><strong>${escapeHtml(context.size)}</strong></div>
+              <div class="context-fact"><span>Git 变更</span><strong>${escapeHtml(context.git)}</strong></div>
+            </div>
+            <p class="context-note">${escapeHtml(context.note)}</p>
+          </div>
+        `;
+      }
+
+      function contextDetails(review) {
+        const files = review?.context_files || 0;
+        const chars = review?.context_chars || 0;
+        const size = files
+          ? `${files} 个文件，${chars.toLocaleString("zh-CN")} 字符`
+          : (chars ? `${chars.toLocaleString("zh-CN")} 字符` : "未发送源码");
+        const details = {
+          source_snapshot: {
+            label: "受限源码快照",
+            git: "未使用（当前目录不是 Git 仓库）",
+            note: "已排除测试、依赖、构建目录、IDE 配置和常见敏感文件；本次属于源码快照评审，不是 diff 评审。",
+          },
+          test_logs_only: {
+            label: "仅测试日志",
+            git: "未使用",
+            note: "这种结果适合定位失败现象，但不等同于完整代码评审。",
+          },
+          local_evidence_only: {
+            label: "本地工具与测试证据",
+            git: "未使用",
+            note: "建议启用受限源码快照，以获得更可靠的根因和代码行建议。",
+          },
+          none: {
+            label: "无代码上下文",
+            git: "未使用",
+            note: "请启用源码快照、静态分析或自动化测试后重新运行。",
+          },
+        };
+        return { ...(details[review?.code_context] || details.none), size };
+      }
+
+      function contextSummary(review) {
+        if (!review) return state.diffNotice || "本次没有代码上下文。";
+        const labels = {
+          git_diff: "Git diff",
+          source_snapshot: "受限源码快照",
+          test_logs_only: "仅测试日志",
+          local_evidence_only: "仅本地工具和测试证据",
+          none: "无代码上下文",
+        };
+        const label = labels[review.code_context] || "未知上下文";
+        const details = review.context_files
+          ? `${review.context_files} 个文件 / ${review.context_chars || 0} 字符`
+          : (review.context_chars ? `${review.context_chars} 字符` : "");
+        return `${label}${details ? `：${details}` : ""}${state.diffNotice ? `。${state.diffNotice}` : ""}`;
       }
 
       function formatSeverity(value) {
@@ -2501,7 +2632,7 @@
 
       function toDiffSkipMessage(message, baseBranch) {
         if (message.includes("Path is not a Git repository")) {
-          return "当前目录不是 Git 仓库，已跳过 diff 上下文；评审将基于静态分析和测试结果继续。";
+          return "当前目录不是 Git 仓库，已跳过 diff 上下文；若已启用，评审将改用受限源码快照。";
         }
         if (message.includes("No diff found for")) {
           return `未发现 ${baseBranch}...HEAD 的代码变更，已跳过 diff 上下文。`;

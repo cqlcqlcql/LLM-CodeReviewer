@@ -2,7 +2,7 @@
 
 LLM-CodeReviewer 是一个本地代码评审 MVP。它把“代码从哪里来”“有哪些客观证据”“模型应该只基于哪些证据评审”“前端如何展示结果”拆成清晰链路，最终输出统一的 `ReviewResponse`。
 
-项目当前支持三类入口：直接粘贴代码、上传单个文件、输入本地项目目录。本地项目目录又分为 Git 仓库和非 Git 目录：Git 仓库优先 review `base_branch...HEAD` 的变更；非 Git 目录不会伪造 diff，而是记录 notice，并继续利用静态分析、测试和可读取的源码上下文。
+项目当前支持两类入口：上传单个文件，或输入本地项目目录。本地项目目录又分为 Git 仓库和非 Git 目录：Git 仓库优先 review `base_branch...HEAD` 的变更；非 Git 目录不会伪造 diff，而是记录 notice，并按配置使用受限源码快照、静态分析和测试证据。
 
 ## 1. 项目结构
 
@@ -15,7 +15,7 @@ code-reviewer-mvp/
     settings.py              # DeepSeek、MAX_CODE_CHARS 配置
     services/
       __init__.py
-      code_loader.py         # 代码文本裁剪和受限源码读取工具
+      code_loader.py         # 受限源码读取、过滤和通用文本裁剪工具
       diff_loader.py         # git diff 执行、base branch 校验、unified diff 解析
       llm.py                 # CodeReviewer 抽象和 DeepSeekReviewer
       single_file_workspace.py # 单文件隔离 Git 工作区
@@ -32,6 +32,7 @@ code-reviewer-mvp/
     project-overview.md      # 当前总览
   tests/
     test_api.py              # API 行为测试
+    test_code_loader.py      # 受限源码快照测试
   .env.example
   pytest.ini
   requirements.txt
@@ -46,7 +47,7 @@ code-reviewer-mvp/
 | 配置 | `app/settings.py` | 从 `.env` 读取 provider、DeepSeek 和长度限制 |
 | 单文件工作区 | `app/services/single_file_workspace.py` | 创建唯一临时目录、空基线提交和 review 提交 |
 | Diff | `app/services/diff_loader.py` | 执行 `git diff <base_branch>...HEAD`，解析文件、hunk 和行号 |
-| LLM | `app/services/llm.py` | mock 规则、DeepSeek 调用、JSON 校验、问题过滤和去重 |
+| LLM | `app/services/llm.py` | DeepSeek 调用、JSON 校验和多来源证据合并 |
 | 工具证据 | `app/services/static_analysis.py` | 把本地工具输出转成 `ReviewIssue` |
 | 测试证据 | `app/services/test_runner.py` | 自动识别测试命令，返回 `TestRunResponse` |
 | 前端 | `frontend/index.html` | 任务配置、执行进度、结果、测试、报告和历史展示 |
@@ -57,16 +58,13 @@ code-reviewer-mvp/
 flowchart TD
     Start["用户在前端发起评审"] --> Input{"输入类型"}
 
-    Input -->|粘贴代码| CodeText["POST /api/review<br/>payload.code"]
     Input -->|上传单文件| FileUpload["POST /api/review/file<br/>UploadFile"]
     Input -->|本地目录| RepoPath["POST /api/review<br/>repository_path"]
 
-    CodeText --> TrimCode["trim_code(MAX_CODE_CHARS)"]
     FileUpload --> FileWorkspace["唯一临时目录<br/>空 main 提交 + review 提交"]
     FileWorkspace --> GitDiff
 
-    RepoPath --> ValidatePath["校验路径存在且是目录"]
-    ValidatePath --> IsGit{"目录包含 .git ?"}
+    RepoPath --> IsGit{"是否 Git 仓库"}
 
     IsGit -->|是| GitDiff["git -c safe.directory=root<br/>diff base_branch...HEAD"]
     GitDiff --> DiffOk{"有 diff ?"}
@@ -75,11 +73,10 @@ flowchart TD
     DiffOk -->|否| NoDiffNotice["notice: No diff found<br/>跳过 diff review"]
 
     IsGit -->|否| NonGitNotice["notice: Path is not a Git repository<br/>跳过 Git diff"]
-    NonGitNotice --> SkipSource["不扫描或拼接全仓源码"]
 
     FormatDiff --> StaticGate{"run_static_analysis ?"}
     NoDiffNotice --> StaticGate
-    SkipSource --> StaticGate
+    NonGitNotice --> StaticGate
 
     StaticGate -->|是| StaticTools["ruff / mypy / bandit / npm run lint"]
     StaticGate -->|否| TestGate{"run_tests ?"}
@@ -87,13 +84,16 @@ flowchart TD
     ToolIssues --> TestGate
 
     TestGate -->|是| TestRunner["pytest / npm test / mvn test / gradle test"]
-    TestGate -->|否| RepoReview["review_repository"]
+    TestGate -->|否| ContextGate{"非 Git 且启用源码快照 ?"}
     TestRunner --> TestResult["TestRunResponse<br/>status / command / failed_cases / log_excerpt"]
-    TestResult --> RepoReview
+    TestResult --> ContextGate
+
+    ContextGate -->|是| SourceSnapshot["优先相关文件并构建受限源码快照"]
+    ContextGate -->|否| RepoReview["review_repository"]
+    SourceSnapshot --> RepoReview
 
     RepoReview --> Merge["合并并去重<br/>LLM + 静态分析 + 测试证据"]
-    ForceLLM --> Response["ReviewResponse"]
-    Merge --> Response
+    Merge --> Response["ReviewResponse"]
 
     Response --> Frontend["前端展示"]
     Frontend --> Views["任务页 / 结果页 / 测试页 / 报告页 / 历史页"]
@@ -104,9 +104,8 @@ flowchart TD
 | 路径 | 输入 | 主要证据 | 是否有 diff 行号 | 适用场景 |
 | --- | --- | --- | --- | --- |
 | 单文件上传 | 主源码和可选关联测试文件 | 临时仓库 diff、静态分析、测试 | 有。上传文件作为新增文件进入 `main...HEAD` | 快速检查源码，并用关联测试验证业务行为 |
-| 代码文本 | 粘贴代码 | 代码文本本身 | reviewer 可给代码行号 | 快速检查独立片段 |
 | Git 仓库 | 本地 Git 项目路径 | `base_branch...HEAD` diff、静态分析、测试 | 有。`ADDED new_line=<n>` 可追溯到新文件行号 | 评审当前分支相对基础分支的改动 |
-| 非 Git 目录 | 普通本地目录 | 静态分析、测试 | 无 Git diff 行号 | 大型目录的安全降级，不发送全仓源码 |
+| 非 Git 目录 | 普通本地目录 | 受限源码快照、静态分析、测试 | 无 Git diff 行号 | 快照评审；排除测试、依赖、构建目录和常见敏感文件，可显式关闭源码发送 |
 
 ## 3. 技术栈
 
@@ -130,20 +129,21 @@ flowchart TD
 
 ```text
 language: string = "python"
-code: string | null
-repository_path: string | null
+repository_path: string
 base_branch: string = "main"
 run_tests: boolean = false
 run_static_analysis: boolean = true
+include_source_context: boolean = true
 ```
 
-`code` 和 `repository_path` 至少提供一个。`base_branch` 是可配置的，避免把所有仓库都硬编码为 `main`。
+`repository_path` 是必填的本地项目目录。`base_branch` 是可配置的，避免把所有仓库都硬编码为 `main`；`include_source_context` 只在非 Git 目录下控制是否向模型发送受限源码快照。
 
 ### 4.2 ReviewIssue
 
 ```text
 file_path: string | null
 source: string
+evidence_sources: string[]
 severity: low | medium | high
 category: string
 line: integer | null
@@ -151,7 +151,7 @@ message: string
 suggestion: string
 ```
 
-`source` 用来说明问题来自哪里，例如 `LLM`、`ruff`、`mypy`、`bandit`、`pytest`、`pytest + LLM`。Git diff 路径下，`file_path` 和 `line` 通常来自 diff 解析后的新文件行号；静态分析路径下则来自工具输出。
+`evidence_sources` 说明支持问题的证据，例如 `["LLM"]`、`["ruff"]`、`["pytest", "LLM"]`。`source` 是由该数组生成的兼容显示字段。Git diff 路径下，`file_path` 和 `line` 通常来自 diff 解析后的新文件行号；静态分析路径下则来自工具输出。
 
 ### 4.3 ReviewResponse
 
@@ -160,9 +160,14 @@ summary: string
 issues: ReviewIssue[]
 notices: string[]
 test_result: TestRunResponse | null
+generated_by: string | null
+llm_status: succeeded | failed | skipped
+code_context: git_diff | source_snapshot | test_logs_only | local_evidence_only | none
+context_files: integer
+context_chars: integer
 ```
 
-`issues` 是真正的代码问题。`notices` 是流程状态，不应被当成缺陷，例如“当前目录不是 Git 仓库，已跳过 diff review”或“没有发现 base_branch...HEAD 的 diff”。
+`issues` 是真正的代码问题。`notices` 是流程状态，不应被当成缺陷，例如“当前目录不是 Git 仓库，已跳过 diff review”或“没有发现 base_branch...HEAD 的 diff”。`generated_by` 和 `llm_status` 说明是否成功经过模型综合，`code_context`、`context_files`、`context_chars` 说明模型实际获得了哪类代码上下文及其规模。
 
 ### 4.4 TestRunRequest / TestRunResponse
 
@@ -225,7 +230,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
-DeepSeek 路径要求模型返回严格 JSON，并用 `ReviewResponse` 再校验一次。如果模型返回空内容、非 JSON、字段不符合契约，后端会返回 502。提示词里明确要求：只评审可证明的问题，优先返回空 `issues` 而不是猜测。
+DeepSeek 路径要求模型返回严格 JSON，并用 `ReviewResponse` 再校验一次。如果模型返回空内容、非 JSON 或字段不符合契约，reviewer 会产生 502 错误；仓库评审和单文件评审会捕获该错误，返回 `llm_status=failed` 并保留本地静态分析与测试结果。提示词里明确要求：只评审可证明的问题，优先返回空 `issues` 而不是猜测。
 
 ## 6. Git diff 与行号追踪
 
@@ -331,26 +336,18 @@ GET /api/health
 ```json
 {
   "status": "ok",
-  "provider": "mock"
+  "provider": "deepseek",
+  "provider_configured": true
 }
 ```
 
-### 代码文本或仓库评审
+### 本地项目目录评审
 
 ```http
 POST /api/review
 ```
 
-代码文本：
-
-```json
-{
-  "language": "python",
-  "code": "def add(a, b):\n    return a - b"
-}
-```
-
-Git 仓库：
+Git 或非 Git 项目目录：
 
 ```json
 {
@@ -411,11 +408,11 @@ POST /api/test
 | 状态 | 含义 | 处理 |
 | --- | --- | --- |
 | 没有 diff | 当前分支相对基础分支没有变更 | 记录 notice，不生成 issue |
-| 非 Git 仓库 | 目录没有 `.git` | 跳过 diff 和全仓源码扫描，只使用静态分析和测试证据 |
+| 非 Git 仓库 | 目录没有 `.git` | 跳过 diff，默认构建受限源码快照，并合并静态分析和测试证据 |
 | 工具未安装 | ruff、mypy、bandit、npm 等不存在 | 跳过该工具，不生成 issue |
 | 测试命令无法识别 | 没有识别到支持的项目类型 | 返回 `unsupported` |
 | 测试超时 | 命令超过 `timeout_seconds` | 返回 `timeout` 并保留日志摘要 |
-| DeepSeek 返回非 JSON | 模型输出不符合契约 | 后端返回 502 |
+| DeepSeek 返回非 JSON | 模型输出不符合契约 | 仓库/单文件评审降级为本地证据并标记 `llm_status=failed`；单独测试诊断可能返回 502 |
 
 ## 12. 当前验证方式
 
@@ -432,5 +429,5 @@ D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
 - 把评分逻辑从前端迁移到后端，让 API、报告和 UI 使用同一分数来源。
 - 增加 `D` 档，用于更严重的阻断状态，例如模型输出不可用、测试基础设施异常或多个高危安全问题。
 - `pytest collected 0 items` 已单独标记为 `no_tests`，前端不会把它显示成失败。
-- 给非 Git 目录增加更明确的“目录扫描评审”模式。
+- 继续增强非 Git 目录的相关文件选择，例如结合依赖图和测试导入关系。
 - 增加报告 PDF 导出、历史持久化、GitHub PR bot 或 CI 集成。

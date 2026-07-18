@@ -1,6 +1,6 @@
 # LLM-CodeReviewer
 
-LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 API，用静态 HTML 前端提供可操作界面，把代码文本、单文件上传、本地仓库 diff、静态分析、自动化测试和 LLM 评审合并成统一的结构化结果。
+LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 API，用静态 HTML 前端提供可操作界面，把单文件上传、本地项目目录、Git diff、静态分析、自动化测试和 LLM 评审合并成统一的结构化结果。
 
 这个项目的重点不是训练模型，而是验证一条可落地的代码评审链路：先由后端收集明确证据，再交给 DeepSeek reviewer 生成 `ReviewResponse`，最后由前端展示问题、测试诊断、diff 摘要、Markdown 报告和历史记录。
 
@@ -8,12 +8,12 @@ LLM-CodeReviewer 是一个本地代码评审 MVP。它用 FastAPI 提供后端 A
 
 ## 当前能力
 
-- `POST /api/review`：评审代码文本，或评审本地项目目录。
+- `POST /api/review`：评审本地 Git 或非 Git 项目目录。
 - `POST /api/review/file`：把主源码和可选的关联测试文件放入隔离的临时 Git 工作区，再复用 diff、静态分析、测试和 DeepSeek 综合评审流程。
 - `POST /api/diff`：读取本地 Git 仓库的 `base_branch...HEAD` diff，并返回文件级摘要。
 - `POST /api/test`：识别并运行 Python、JavaScript/TypeScript、Java 项目的测试命令。
 - Git 仓库路径优先走 diff review，只关注当前分支相对基础分支的变更。
-- 非 Git 目录不会扫描并拼接全仓源码，而是记录 notice，并只使用可选的静态分析和测试证据。
+- 非 Git 目录使用显式可关闭的受限源码快照：按语言筛选文件，排除测试、依赖、构建目录和常见敏感文件，并受单文件与总字符上限约束；静态分析和测试涉及的文件会优先进入上下文。
 - 静态分析支持 Python 的 `ruff`、`mypy`、`bandit`，以及 JS/TS 项目的 `npm run lint`。
 - 产品评审统一通过 OpenAI SDK 兼容接口调用 DeepSeek；自动化测试使用测试目录中的确定性替身，不访问网络。
 
@@ -34,7 +34,7 @@ code-reviewer-mvp/
     services/
       code_loader.py         # 目录代码读取、过滤和长度裁剪
       diff_loader.py         # Git diff 读取、解析、行号格式化
-      llm.py                 # mock / DeepSeek reviewer，以及评审噪声过滤
+      llm.py                 # DeepSeek reviewer、结构化 JSON 校验和证据合并提示词
       static_analysis.py     # ruff、mypy、bandit、npm lint
       test_runner.py         # pytest、npm test、mvn/gradle test
   frontend/
@@ -48,6 +48,7 @@ code-reviewer-mvp/
     project-overview.md
   tests/
     test_api.py              # 端到端 API 行为测试
+    test_code_loader.py      # 非 Git 源码快照筛选和截断测试
   requirements.txt
   pytest.ini
 ```
@@ -57,20 +58,21 @@ code-reviewer-mvp/
 ```mermaid
 flowchart TD
     A["用户输入"] --> B{"输入类型"}
-    B -->|粘贴代码| C["/api/review: 直接裁剪代码文本"]
     B -->|上传单文件| D["/api/review/file: 读取 UploadFile"]
     B -->|本地目录| E{"是否 Git 仓库"}
-    C --> R["DeepSeek reviewer"]
     D --> W["创建隔离 Git 工作区和两次提交"]
     W --> F
     E -->|是| F["读取 git diff base_branch...HEAD"]
     F --> G["解析文件、hunk、ADDED 行号"]
-    E -->|否| H["记录 notice，不扫描全仓源码"]
+    E -->|否| H["记录非 Git notice"]
     G --> I["可选静态分析"]
     H --> I
     I --> J["可选自动化测试"]
-    J --> K["review_repository 汇总 diff、工具、测试证据"]
-    K --> R
+    J --> Q{"非 Git 且启用源码快照？"}
+    Q -->|是| S["优先相关文件并构建受限源码快照"]
+    Q -->|否| K["review_repository 汇总证据"]
+    S --> K
+    K --> R["DeepSeek reviewer"]
     R --> L["ReviewResponse"]
     L --> M["前端结果页 / 测试页 / 报告页 / 历史页"]
 ```
@@ -86,6 +88,7 @@ flowchart TD
     {
       "file_path": "calculator.py",
       "source": "ruff",
+      "evidence_sources": ["ruff"],
       "severity": "low",
       "category": "F841",
       "line": 2,
@@ -94,6 +97,11 @@ flowchart TD
     }
   ],
   "notices": [],
+  "generated_by": "deepseek",
+  "llm_status": "succeeded",
+  "code_context": "git_diff",
+  "context_files": 0,
+  "context_chars": 1840,
   "test_result": {
     "test_status": "passed",
     "command": "pytest",
@@ -160,14 +168,6 @@ MAX_CODE_CHARS=24000
 
 ## API 示例
 
-评审一段代码：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/review \
-  -H "Content-Type: application/json" \
-  -d "{\"language\":\"python\",\"code\":\"def add(a,b): return a-b\"}"
-```
-
 评审本地 Git 仓库，并合并静态分析和测试结果：
 
 ```bash
@@ -196,7 +196,7 @@ curl -X POST http://127.0.0.1:8000/api/test \
 
 主界面包含五个视图：
 
-- 任务页：选择代码文本、主源码及关联测试文件，或本地目录，并配置 base branch、静态分析和测试。
+- 任务页：上传主源码及关联测试文件，或填写本地项目目录，并配置 base branch、静态分析和测试。
 - 结果页：展示总体评分、问题卡片、证据片段、diff 摘要和测试状态。
 - 测试页：展示测试命令、状态、失败用例数量、日志摘要和 LLM 测试分析。
 - 报告页：生成 Markdown 报告，可下载或通过浏览器打印。
@@ -212,4 +212,4 @@ curl -X POST http://127.0.0.1:8000/api/test \
 D:\profile\code-reviewer-mvp\.venv\Scripts\python.exe -m pytest
 ```
 
-测试会自动注入仅存在于 `tests/` 的确定性 reviewer，不访问 DeepSeek。测试覆盖代码文本评审、单文件临时 Git 工作区、Git diff、base branch、静态分析合并、非 Git 目录降级、pytest 数量统计和响应模型等关键行为。
+测试会自动注入仅存在于 `tests/` 的确定性 reviewer，不访问 DeepSeek。测试覆盖仓库路径校验、单文件临时 Git 工作区、Git diff、base branch、静态分析合并、非 Git 源码快照、pytest 数量统计和响应模型等关键行为。
